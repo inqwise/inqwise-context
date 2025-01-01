@@ -1,0 +1,33 @@
+= Tools for Vert.x Context
+
+Mapped Context Tools for Vert.x
+
+== Purpose
+
+Vert.x Tracing SPI combined with EventBus serves as an efficient data store and transport mechanism.
+This mechanism enables the propagation of metadata (data about data) and the collection of contextual information across the entire data flow.
+Examples include request ownership, role details, or policy metadata that need to be consistently shared across multiple flows.
+
+== Gates
+
+A Gate represents a logical point where the default data transport mechanism is either unsupported or would disrupt the transportation flow.
+
+The EventBus gate is implemented as part of this library and operates seamlessly.
+The following gates are currently unsupported, and we plan to add them in future releases:
+- Kafka clients
+- Elasticsearch clients
+- Redis clients
+- CircuitBreaker
+
+== Data Items
+
+ContextChainDataItem is an abstract Data Object Model designed for transportation.
+To enable serialization and deserialization of these data items, we introduce the ContextChainDataService interface.
+
+== Acknowledgments
+
+This project is inspired by https://github.com/reactiverse/reactiverse-contextual-logging[reactiverse-contextual-logging].
+
+== License
+
+This project is licensed under the MIT License.
