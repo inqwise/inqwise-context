@@ -54,8 +54,7 @@
 		<maven.gpg.plugin.version>1.6</maven.gpg.plugin.version>
 		<maven.javadoc.plugin.version>3.5.0</maven.javadoc.plugin.version>
 		<guava.version>33.5.0-jre</guava.version>
-		<jacoco.plugin.version>0.8.13</jacoco.plugin.version>
-		<log4j2.version>2.22.1</log4j2.version>
+		<log4j2.version>2.25.2</log4j2.version>
 		<vertx.version>5.0.4</vertx.version>
 		<junit-platform.version>1.10.2</junit-platform.version>
     </properties>
