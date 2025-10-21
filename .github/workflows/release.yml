@@ -14,7 +14,7 @@ jobs:
   release:
     name: Release to Maven Central
     runs-on: ubuntu-latest
-    if: github.repository == 'inqwise/inqwise-neo4j-client'
+    if: github.repository == 'inqwise/inqwise-context'
 
     steps:
       - name: Checkout code
@@ -85,22 +85,22 @@ jobs:
             VERSION="${VERSION#v}"
           fi
           git checkout -f "v$VERSION"
-          MAVEN_REPO="$HOME/.m2/repository/com/inqwise/neo4j-client/inqwise-neo4j-client/$VERSION"
+          MAVEN_REPO="$HOME/.m2/repository/com/inqwise/inqwise-context/inqwise-context/$VERSION"
 
           mkdir -p release-assets
 
           # Copy the release artifacts from Maven local repository
           if [ -d "$MAVEN_REPO" ]; then
-            cp "$MAVEN_REPO/inqwise-neo4j-client-$VERSION.jar" release-assets/ || echo "Main JAR not found"
-            cp "$MAVEN_REPO/inqwise-neo4j-client-$VERSION-sources.jar" release-assets/ || echo "Sources JAR not found"
-            cp "$MAVEN_REPO/inqwise-neo4j-client-$VERSION-javadoc.jar" release-assets/ || echo "Javadoc JAR not found"
+            cp "$MAVEN_REPO/inqwise-context-$VERSION.jar" release-assets/ || echo "Main JAR not found"
+            cp "$MAVEN_REPO/inqwise-context-$VERSION-sources.jar" release-assets/ || echo "Sources JAR not found"
+            cp "$MAVEN_REPO/inqwise-context-$VERSION-javadoc.jar" release-assets/ || echo "Javadoc JAR not found"
           else
             echo "Maven repository directory not found: $MAVEN_REPO"
             echo "Falling back to building artifacts with correct version"
             # Checkout the release tag to build the correct version
             git checkout "v$VERSION"
             mvn clean package -P sonatype-oss-release -DskipTests
-            cp target/inqwise-neo4j-client-*.jar release-assets/
+            cp target/inqwise-context-*.jar release-assets/
           fi
 
           # List what we actually have
@@ -124,7 +124,7 @@ jobs:
             ```xml
             <dependency>
                 <groupId>com.inqwise</groupId>
-                <artifactId>inqwise-neo4j-client</artifactId>
+                <artifactId>inqwise-context</artifactId>
                 <version>${{ github.event.inputs.version }}</version>
             </dependency>
             ```
@@ -136,8 +136,8 @@ jobs:
             - All artifacts GPG signed
 
             ## 🔗 Links
-            - [Maven Central](https://central.sonatype.com/artifact/com.inqwise.neo4j-client/inqwise-neo4j-client/${{ github.event.inputs.version }})
-            - [Documentation](https://github.com/inqwise/inqwise-neo4j-client#readme)
+            - [Maven Central](https://central.sonatype.com/artifact/com.inqwise/inqwise-context/${{ github.event.inputs.version }})
+            - [Documentation](https://github.com/inqwise/inqwise-context#readme)
 
             ---
             *Released automatically via GitHub Actions*
