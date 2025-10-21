@@ -1,26 +1,24 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-	<prerequisites>
-		<maven>3.0</maven>
-	</prerequisites>
+<?xml version="1.0" encoding="UTF-8" ?>
+<project
+    xmlns="http://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd"
+>
+
 	<modelVersion>4.0.0</modelVersion>
-	
+
 	<groupId>com.inqwise</groupId>
 	<artifactId>inqwise-context</artifactId>
-	<version>1.0.0</version>
-	<description>
+	<version>1.1.0-SNAPSHOT</version>
+	<description />
+	<name>Inqwise Context - Tools for Vert.x context</name>
 
-    </description>
-	 <name>Inqwise Context - Tools for Vert.x context</name>
-	
 	<organization>
 		<name>inqwise</name>
 	</organization>
-	
-	<url>https://github.com/inqwise</url>
-	
+
+	<url>https://github.com/inqwise/inqwise-context</url>
+
 	<developers>
 		<developer>
 			<id>alex-inqwise</id>
@@ -30,7 +28,7 @@
             <organizationUrl>https://www.inqwise.com</organizationUrl>
 		</developer>
 	</developers>
-	
+
 	<licenses>
         <license>
             <name>MIT License</name>
@@ -40,11 +38,12 @@
     </licenses>
 
 	<scm>
-		<connection>scm:git:git@github.com:inqwise/inqwise-context.git</connection>
-		<developerConnection>scm:git:git@github.com:inqwise/inqwise-context.git</developerConnection>
-		<url>git@github.com:inqwise/inqwise-leader.git</url>
+		<connection>scm:git:https://github.com:inqwise/inqwise-context.git</connection>
+		<developerConnection
+        >scm:git:https://github.com:inqwise/inqwise-context.git</developerConnection>
+		<url>https://github.com:inqwise/inqwise-context</url>
 	</scm>
-	
+
 	<properties>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 		<maven.version>3.6.3</maven.version>
@@ -57,8 +56,9 @@
 		<guava.version>33.5.0-jre</guava.version>
 		<log4j2.version>2.25.2</log4j2.version>
 		<vertx.version>5.0.4</vertx.version>
+		<junit-platform.version>1.10.2</junit-platform.version>
     </properties>
-	
+
 	<dependencies>
 		<dependency>
 			<groupId>io.vertx</groupId>
@@ -108,10 +108,15 @@
 			<artifactId>junit-jupiter-params</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<dependency>
+			<groupId>org.junit.platform</groupId>
+			<artifactId>junit-platform-launcher</artifactId>
+			<scope>test</scope>
+		</dependency>
 	</dependencies>
-	
+
 	<dependencyManagement>
-		<dependencies>			
+		<dependencies>
 			<dependency>
 				<groupId>org.junit.jupiter</groupId>
 				<artifactId>junit-jupiter-api</artifactId>
@@ -128,6 +133,21 @@
 				<version>${junit5.version}</version>
 			</dependency>
 			<dependency>
+				<groupId>org.junit.platform</groupId>
+				<artifactId>junit-platform-launcher</artifactId>
+				<version>${junit-platform.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>org.junit.platform</groupId>
+				<artifactId>junit-platform-engine</artifactId>
+				<version>${junit-platform.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>org.junit.platform</groupId>
+				<artifactId>junit-platform-commons</artifactId>
+				<version>${junit-platform.version}</version>
+			</dependency>
+			<dependency>
 				<groupId>org.apache.logging.log4j</groupId>
 				<artifactId>log4j-api</artifactId>
 				<version>${log4j2.version}</version>
@@ -139,7 +159,7 @@
 			</dependency>
 		</dependencies>
 	</dependencyManagement>
-	
+
 	<build>
 		<plugins>
 			<!-- Javadocs Plugin -->
@@ -169,14 +189,15 @@
 						</goals>
 						<configuration>
 							<rules>
-								<banDuplicatePomDependencyVersions/>
+								<banDuplicatePomDependencyVersions />
 								<bannedPlugins>
 									<!-- will only display a warning but does not fail the build. -->
 									<level>WARN</level>
 									<excludes>
 										<exclude>org.apache.maven.plugins:maven-verifier-plugin</exclude>
 									</excludes>
-									<message>Please consider using the maven-invoker-plugin (http://maven.apache.org/plugins/maven-invoker-plugin/)!</message>
+									<message
+                                    >Please consider using the maven-invoker-plugin (http://maven.apache.org/plugins/maven-invoker-plugin/)!</message>
 								</bannedPlugins>
 								<requireMavenVersion>
 									<version>${maven.version}</version>
@@ -190,11 +211,38 @@
 				</executions>
 			</plugin>
 			<plugin>
+				<groupId>org.jacoco</groupId>
+				<artifactId>jacoco-maven-plugin</artifactId>
+				<version>${jacoco.plugin.version}</version>
+				<executions>
+					<execution>
+						<goals>
+							<goal>prepare-agent</goal>
+						</goals>
+					</execution>
+					<execution>
+						<id>report</id>
+						<phase>test</phase>
+						<goals>
+							<goal>report</goal>
+						</goals>
+						<configuration>
+							<outputDirectory>${project.reporting.outputDirectory}/jacoco</outputDirectory>
+							<formats>
+								<format>XML</format>
+								<format>HTML</format>
+							</formats>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-surefire-plugin</artifactId>
-				<version>3.1.2</version>
+				<version>3.5.4</version>
 				<configuration>
-					<argLine>--illegal-access=permit -Dvertx.logger-delegate-factory-class-name=io.vertx.core.logging.Log4j2LogDelegateFactory</argLine>
+					<argLine
+                    >@{argLine} --illegal-access=permit -Dvertx.logger-delegate-factory-class-name=io.vertx.core.logging.Log4j2LogDelegateFactory</argLine>
 				</configuration>
 				<dependencies>
 					<dependency>
@@ -202,12 +250,17 @@
 						<artifactId>junit-jupiter-engine</artifactId>
 						<version>${junit5.version}</version>
 					</dependency>
+					<dependency>
+						<groupId>org.junit.platform</groupId>
+						<artifactId>junit-platform-launcher</artifactId>
+						<version>${junit-platform.version}</version>
+					</dependency>
 				</dependencies>
 			</plugin>
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-source-plugin</artifactId>
-				<version>3.3.0</version>
+				<version>3.3.1</version>
 				<executions>
 					<execution>
 						<id>attach-sources</id>
@@ -222,10 +275,11 @@
 				<artifactId>maven-compiler-plugin</artifactId>
 				<version>${maven-compiler-plugin.version}</version>
 				<configuration>
-					<forceJavacCompilerUse>true</forceJavacCompilerUse>
+					<forceLegacyJavacApi>true</forceLegacyJavacApi>
 					<release>${java.version}</release>
 					<generatedSourcesDirectory>src/main/generated</generatedSourcesDirectory>
-					<generatedTestSourcesDirectory>src/test/generated</generatedTestSourcesDirectory>
+					<generatedTestSourcesDirectory
+                    >src/test/generated</generatedTestSourcesDirectory>
 				</configuration>
 			</plugin>
 			<plugin>
@@ -239,7 +293,6 @@
 								<include>**/surface-reports/**</include>
 								<include>**/target/**</include>
 								<include>**/*.log</include>
-								
 							</includes>
 						</fileset>
 					</filesets>
@@ -251,21 +304,45 @@
 				<plugin>
 					<groupId>org.apache.maven.plugins</groupId>
 					<artifactId>maven-clean-plugin</artifactId>
-					<version>3.3.1</version>
+					<version>3.5.0</version>
 				</plugin>
 				<plugin>
 					<groupId>org.apache.maven.plugins</groupId>
 					<artifactId>maven-deploy-plugin</artifactId>
-					<version>3.1.1</version>
+					<version>3.1.4</version>
 				</plugin>
 				<plugin>
 					<groupId>org.apache.maven.plugins</groupId>
 					<artifactId>maven-install-plugin</artifactId>
+					<version>3.1.4</version>
+				</plugin>
+				<plugin>
+					<groupId>org.apache.maven.plugins</groupId>
+					<artifactId>maven-site-plugin</artifactId>
+					<version>3.21.0</version>
+				</plugin>
+				<plugin>
+					<groupId>org.apache.maven.plugins</groupId>
+					<artifactId>maven-release-plugin</artifactId>
 					<version>3.1.1</version>
 				</plugin>
 			</plugins>
 		</pluginManagement>
 	</build>
+
+	<distributionManagement>
+		<repository>
+			<id>sonatype-oss-release</id>
+			<name>Central Repository</name>
+			<url>https://central.sonatype.com/api/v1/publisher</url>
+		</repository>
+		<snapshotRepository>
+			<id>sonatype-oss-snapshots</id>
+			<name>Central Repository Snapshots</name>
+			<url>https://central.sonatype.com/api/v1/publisher</url>
+		</snapshotRepository>
+	</distributionManagement>
+
 	<profiles>
 		<profile>
             <id>sonatype-oss-release</id>
@@ -275,10 +352,13 @@
                     <plugin>
                         <groupId>org.sonatype.central</groupId>
                         <artifactId>central-publishing-maven-plugin</artifactId>
-                        <version>0.6.0</version>
+                        <version>0.9.0</version>
                         <extensions>true</extensions>
                         <configuration>
-                            <publishingServerId>sonatype-oss-release</publishingServerId>
+                            <publishingServerId
+                            >sonatype-oss-release</publishingServerId>
+                            <autoPublish>true</autoPublish>
+                            <checksums>required</checksums>
                         </configuration>
                     </plugin>
 
@@ -308,4 +388,3 @@
         </profile>
 	</profiles>
 </project>
-
