@@ -52,7 +52,8 @@ jobs:
             -DreleaseVersion=${{ github.event.inputs.version }} \
             -DdevelopmentVersion=${NEXT_VERSION}-SNAPSHOT \
             -Dtag=v${{ github.event.inputs.version }} \
-            -DskipTests
+            -DskipTests \
+            -Darguments="-Dmaven.deploy.skip=true -DskipTests"
         env:
           MAVEN_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
@@ -68,7 +69,7 @@ jobs:
             VERSION_INPUT="${VERSION_INPUT#v}"
           fi
           git checkout -f "v${VERSION_INPUT}"
-          mvn clean deploy -P sonatype-oss-release -DskipTests -DreleaseVersion="$VERSION_INPUT"
+          mvn clean deploy -P sonatype-oss-release -Dmaven.deploy.skip=true -DskipTests -DreleaseVersion="$VERSION_INPUT"
         env:
           MAVEN_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
