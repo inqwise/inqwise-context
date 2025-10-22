@@ -5,7 +5,7 @@
 
 	<groupId>com.inqwise</groupId>
 	<artifactId>inqwise-context</artifactId>
-	<version>1.1.10-SNAPSHOT</version>
+	<version>1.1.10</version>
 	<description>Context propagation utilities for Vert.x applications, including storage helpers, data services, and event bus transport wiring.</description>
 	<name>Inqwise Context - Tools for Vert.x context</name>
 
@@ -37,7 +37,7 @@
 		<connection>scm:git:https://github.com/inqwise/inqwise-context.git</connection>
 		<developerConnection>scm:git:https://github.com/inqwise/inqwise-context.git</developerConnection>
 		<url>https://github.com/inqwise/inqwise-context</url>
-	  <tag>HEAD</tag>
+	  <tag>v1.1.10</tag>
   </scm>
 
 	<properties>
