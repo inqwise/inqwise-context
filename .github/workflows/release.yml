@@ -85,7 +85,7 @@ jobs:
             VERSION="${VERSION#v}"
           fi
           git checkout -f "v$VERSION"
-          MAVEN_REPO="$HOME/.m2/repository/com/inqwise/inqwise-context/inqwise-context/$VERSION"
+          MAVEN_REPO="$HOME/.m2/repository/com/inqwise/inqwise-context/$VERSION"
 
           mkdir -p release-assets
 
