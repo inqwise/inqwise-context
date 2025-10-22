@@ -33,8 +33,6 @@ jobs:
     runs-on: ubuntu-latest
     # Run on PR, releases, and monthly schedule (free tier optimized)
     if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    env:
-      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
     steps:
       - name: Checkout code
@@ -50,14 +48,13 @@ jobs:
       - name: Build project
         run: mvn clean compile -DskipTests
 
-      - name: Install Snyk CLI
-        if: ${{ env.SNYK_TOKEN != '' }}
-        uses: snyk/actions/setup@v1
-
       - name: Run Snyk to check for vulnerabilities
-        if: ${{ env.SNYK_TOKEN != '' }}
+        uses: snyk/actions/maven@master
         continue-on-error: true
-        run: snyk test --file=pom.xml --package-manager=maven --severity-threshold=high --sarif-file-output=snyk.sarif
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --sarif-file-output=snyk.sarif
 
       - name: Upload Snyk results to GitHub Code Scanning
         uses: github/codeql-action/upload-sarif@v4
@@ -70,8 +67,6 @@ jobs:
     runs-on: ubuntu-latest
     # Only monitor on tags/releases to conserve free tier usage
     if: startsWith(github.ref, 'refs/tags/')
-    env:
-      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
     steps:
       - name: Checkout code
@@ -87,21 +82,19 @@ jobs:
       - name: Build project
         run: mvn clean compile -DskipTests
 
-      - name: Install Snyk CLI
-        if: ${{ env.SNYK_TOKEN != '' }}
-        uses: snyk/actions/setup@v1
-
       - name: Run Snyk monitor
-        if: ${{ env.SNYK_TOKEN != '' }}
-        run: snyk monitor --file=pom.xml --package-manager=maven --project-name=inqwise-context
+        uses: snyk/actions/maven@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: monitor
+          args: --project-name=inqwise-context
 
   snyk-container:
     name: Snyk Container Scan
     runs-on: ubuntu-latest
     # Only run on releases and manual dispatch to conserve free tier
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-    env:
-      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
     steps:
       - name: Checkout code
@@ -126,10 +119,10 @@ jobs:
           EOF
           docker build -f Dockerfile.scan -t inqwise-context:scan .
 
-      - name: Install Snyk CLI
-        if: ${{ env.SNYK_TOKEN != '' }}
-        uses: snyk/actions/setup@v1
-
       - name: Run Snyk to check Docker image for vulnerabilities
-        if: ${{ env.SNYK_TOKEN != '' }}
-        run: snyk container test inqwise-context:scan --severity-threshold=high
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: inqwise-context:scan
+          args: --severity-threshold=high
