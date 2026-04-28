@@ -29,20 +29,23 @@ public class ContextChainStorageHolder implements VertxServiceProvider {
 		
 	}
 	
-	private static List<ContextChainDataService> dataProviders; 
+	private static volatile List<ContextChainDataService> dataProviders; 
 	static List<ContextChainDataService> getDataProviders() {
-		var loader = ServiceLoader.load(ContextChainDataService.class);
-		if(null == dataProviders) {
+		var result = dataProviders;
+		if (null == result) {
 			synchronized (ContextChainDataService.class) {
-				if(null == dataProviders) {
-					dataProviders = ImmutableList.copyOf(loader);
-					if(dataProviders.isEmpty()) {
+				result = dataProviders;
+				if (null == result) {
+					var loader = ServiceLoader.load(ContextChainDataService.class);
+					result = ImmutableList.copyOf(loader);
+					if (result.isEmpty()) {
 						logger.warn("dataProviders IS EMPTY");
 					}
+					dataProviders = result;
 				}
 			}
 		}
-		return dataProviders;
+		return result;
 	}
 	
 	static ContextChainDataService getDataProvider(String key) {
