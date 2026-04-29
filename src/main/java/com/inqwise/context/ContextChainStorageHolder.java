@@ -50,7 +50,7 @@ public class ContextChainStorageHolder implements VertxServiceProvider {
 	
 	static ContextChainDataService getDataProvider(String key) {
 		Objects.requireNonNull(key, "key is mandatory");
-		var result = getDataProviders().stream().filter(p -> null != p.key() && p.key() == key).findFirst().orElse(null);
+		var result = getDataProviders().stream().filter(p -> key.equals(p.key())).findFirst().orElse(null);
 		return Objects.requireNonNull(result, "key not supported");
 	}
 	
