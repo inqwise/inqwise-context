@@ -19,6 +19,7 @@ import io.vertx.core.Vertx;
 import io.vertx.core.eventbus.DeliveryContext;
 import io.vertx.core.eventbus.DeliveryOptions;
 import io.vertx.core.eventbus.Message;
+import io.vertx.core.eventbus.ReplyFailure;
 
 class EventBusTransportHandlerTest {
 
@@ -138,6 +139,18 @@ class EventBusTransportHandlerTest {
 
 		private boolean isNextCalled() {
 			return nextCalled;
+		}
+
+		@Override
+		public boolean fail(int failureCode, String message) {
+			// TODO Auto-generated method stub
+			return false;
+		}
+
+		@Override
+		public boolean fail(ReplyFailure failure, int failureCode, String message) {
+			// TODO Auto-generated method stub
+			return false;
 		}
 	}
 
