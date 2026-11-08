@@ -16,7 +16,16 @@ import io.vertx.core.internal.logging.LoggerFactory;
 import io.vertx.core.spi.VertxServiceProvider;
 import io.vertx.core.spi.context.storage.ContextLocal;
 
+/**
+ * Registers the shared context-local slot and discovers metadata providers.
+ */
 public class ContextChainStorageHolder implements VertxServiceProvider {
+    /**
+     * Creates the service provider used during Vert.x bootstrap.
+     */
+    public ContextChainStorageHolder() {
+    }
+
 	private static final Logger logger = LoggerFactory.getLogger(ContextChainStorageHolder.class);
 	
 	@SuppressWarnings("rawtypes")

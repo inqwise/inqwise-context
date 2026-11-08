@@ -8,7 +8,17 @@ import com.inqwise.context.spi.ContextChainDataItem;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.json.JsonObject;
 
+/**
+ * Encodes {@link FlowId} values as Base64 JSON under the {@code flow_id} key.
+ * Timestamps are represented as epoch milliseconds.
+ */
 public class FlowIdService implements ContextChainDataService {
+
+    /**
+     * Creates the stateless provider used for flow identifiers.
+     */
+    public FlowIdService() {
+    }
 
 	@Override
 	public String key() {
