@@ -26,16 +26,54 @@ CI tests JDK 21, 22, 25, and 27. Newer build JDKs are rejected by Maven Enforcer
 Run `mvn test` for tests and coverage, or `mvn verify` to also check packaging and Javadocs.
 JaCoCo generates HTML and XML reports under `target/site/jacoco`.
 
+== Client Context Compatibility
+
+The compatibility tests check that a stored `ContextChainDataItem` remains the exact same Java object in the calling context and its asynchronous continuations.
+They cover success, failure, fallback, timeout, and overlapping calls where applicable, using transport doubles and loopback servers without external services.
+
+[cols="1,2",options="header"]
+|===
+|Client or extension |Tested behavior
+|Vert.x Kafka producer 5.2.3 |Send success, submission and acknowledgment failures, and overlapping acknowledgments preserve the caller's instance.
+|Vert.x Kafka consumer 5.2.3 |Shared-consumer assignment and polling need `ContextPropagation.bind` to resume on the caller's context, on success and failure.
+|Vert.x Redis client 5.2.3 |Success, Redis errors, disconnects, and overlapping pooled calls preserve the caller's instance.
+|Vert.x WebClient 5.2.3 |HTTP responses, disconnects, and overlapping requests preserve the caller's instance.
+|Vert.x CircuitBreaker 5.2.3 |Operation completion, failure recovery, fallback, timeout, and context updates returned to the caller preserve object identity.
+|Vert.x timers 5.2.3 |One-shot callbacks and timer futures preserve object identity on completion and cancellation. Periodic ticks use fresh contexts and need `ContextPropagation.bindHandler`; adapted ticks and isolated flows retain the caller's instance.
+|Elasticsearch Java async client 8.15.3 |A controlled transport completes on a foreign thread; `ContextPropagation.bind` preserves the caller's instance on success and failure.
+|===
+
+Bind results before attaching application continuations, from within the originating Vert.x context:
+
+[source,java]
+----
+ContextPropagation.bind(elasticsearch.ping())
+    .onSuccess(response -> use(Storage.get("metadata")));
+
+ContextPropagation.bind(sharedKafkaConsumer.poll(Duration.ofMillis(100)))
+    .onSuccess(records -> use(Storage.get("metadata")));
+
+vertx.setPeriodic(1000, ContextPropagation.bindHandler(timerId ->
+    use(Storage.get("metadata"))));
+----
+
+The adapter rebinds the result to the calling context; it does not make raw client threads context-aware or attach metadata to protocol messages.
+Object identity is a same-JVM guarantee. Transport across process boundaries requires serialization and creates a new instance on the receiving side.
+These tests validate client integration at the mocked or loopback boundary, not compatibility with deployed Kafka, Redis, or Elasticsearch servers.
+
 == Gates
 
 A Gate represents a logical point where the default data transport mechanism is either unsupported or would disrupt the transportation flow.
 
-The EventBus gate is implemented as part of this library and operates seamlessly.
-The following gates are currently unsupported, and we plan to add them in future releases:
+The EventBus gate serializes registered metadata into message headers and reads it on receipt.
+Automatic protocol-level metadata transport is not implemented for:
 - Kafka clients
 - Elasticsearch clients
 - Redis clients
-- CircuitBreaker
+- HTTP clients, including WebClient
+
+This is separate from the same-JVM context continuity tested above.
+CircuitBreaker does not need a wire-transport gate; its call, fallback, and return paths retain context as described in the compatibility table.
 
 == Data Items
 
