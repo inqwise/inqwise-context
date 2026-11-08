@@ -49,11 +49,11 @@
 		<maven-flatten-plugin.version>1.5.0</maven-flatten-plugin.version>
 		<maven.gpg.plugin.version>1.6</maven.gpg.plugin.version>
 		<maven.javadoc.plugin.version>3.5.0</maven.javadoc.plugin.version>
-		<guava.version>33.7.2-jre</guava.version>
-		<log4j2.version>2.25.5</log4j2.version>
-		<vertx.version>5.2.1</vertx.version>
+		<guava.version>33.8.0-jre</guava.version>
+		<log4j2.version>2.26.1</log4j2.version>
+		<vertx.version>5.2.3</vertx.version>
 		<junit-platform.version>6.1.3</junit-platform.version>
-		<jacoco.plugin.version>0.8.13</jacoco.plugin.version>
+		<jacoco.plugin.version>0.8.16</jacoco.plugin.version>
     </properties>
 
 	<dependencies>
@@ -199,7 +199,8 @@
 									<version>${maven.version}</version>
 								</requireMavenVersion>
 								<requireJavaVersion>
-				  					<version>${java.version}</version>
+									<version>[${java.version},28)</version>
+									<message>Build with JDK 21 through 27; coverage support must be verified before enabling newer JDKs.</message>
 								</requireJavaVersion>
 							</rules>
 						</configuration>
@@ -237,7 +238,7 @@
 				<artifactId>maven-surefire-plugin</artifactId>
 				<version>3.5.4</version>
 				<configuration>
-					<argLine>@{argLine} --illegal-access=permit -Dvertx.logger-delegate-factory-class-name=io.vertx.core.logging.Log4j2LogDelegateFactory</argLine>
+					<argLine>@{argLine} -Dvertx.logger-delegate-factory-class-name=io.vertx.core.logging.Log4j2LogDelegateFactory</argLine>
 				</configuration>
 				<dependencies>
 					<dependency>
@@ -270,7 +271,6 @@
 				<artifactId>maven-compiler-plugin</artifactId>
 				<version>${maven-compiler-plugin.version}</version>
 				<configuration>
-					<forceLegacyJavacApi>true</forceLegacyJavacApi>
 					<release>${java.version}</release>
 					<generatedSourcesDirectory>src/main/generated</generatedSourcesDirectory>
 					<generatedTestSourcesDirectory>src/test/generated</generatedTestSourcesDirectory>

@@ -17,6 +17,15 @@ Vert.x Tracing SPI combined with EventBus serves as an efficient data store and 
 This mechanism enables the propagation of metadata (data about data) and the collection of contextual information across the entire data flow.
 Examples include request ownership, role details, or policy metadata that need to be consistently shared across multiple flows.
 
+== Development
+
+Build and test with JDK 21 through 27 and Maven 3.6.3 or newer.
+The library is compiled for Java 21; the development JDK range reflects verified coverage-tool compatibility and does not limit the runtime of consuming applications.
+CI tests JDK 21, 22, 25, and 27. Newer build JDKs are rejected by Maven Enforcer until coverage support has been verified.
+
+Run `mvn test` for tests and coverage, or `mvn verify` to also check packaging and Javadocs.
+JaCoCo generates HTML and XML reports under `target/site/jacoco`.
+
 == Gates
 
 A Gate represents a logical point where the default data transport mechanism is either unsupported or would disrupt the transportation flow.

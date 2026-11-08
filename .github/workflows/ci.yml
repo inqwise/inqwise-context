@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        java: [21, 22]
+        java: [21, 22, 25, 27]
 
     steps:
       - name: Checkout code
@@ -37,7 +37,6 @@ jobs:
         run: mvn clean test jacoco:report -B
 
       - name: Verify coverage report exists
-        if: matrix.java == 21
         run: |
           if [ ! -f target/site/jacoco/jacoco.xml ]; then
             echo "Coverage report target/site/jacoco/jacoco.xml missing"

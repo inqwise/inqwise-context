@@ -5,13 +5,16 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import com.inqwise.context.data.FlowId;
 import com.inqwise.context.data.FlowIdService;
+import com.inqwise.context.spi.ContextChainDataItem;
 
 import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
@@ -20,7 +23,10 @@ import io.vertx.core.eventbus.DeliveryContext;
 import io.vertx.core.eventbus.DeliveryOptions;
 import io.vertx.core.eventbus.Message;
 import io.vertx.core.eventbus.ReplyFailure;
+import io.vertx.junit5.VertxExtension;
+import io.vertx.junit5.VertxTestContext;
 
+@ExtendWith(VertxExtension.class)
 class EventBusTransportHandlerTest {
 
 	private final EventBusTransportHandler handler = new EventBusTransportHandler();
@@ -109,9 +115,83 @@ class EventBusTransportHandlerTest {
 		}
 	}
 
+    @Test
+    void handleOutbound_existingHeaders_replacesDuplicatesWithCurrentContext(Vertx vertx, VertxTestContext context) {
+        vertx.runOnContext(ignored -> context.verify(() -> {
+            FlowId current = FlowId.builder().withId("current").build();
+            Storage.put(flowIdService.key(), current);
+            StubMessage message = new StubMessage(null);
+            message.headers().add(flowIdService.key(), "stale");
+            message.headers().add(flowIdService.key(), "duplicate");
+            message.headers().add("unrelated", "preserved");
+            StubDeliveryContext delivery = new StubDeliveryContext(message);
+
+            handler.handleOutbound(delivery);
+
+            assertEquals(List.of(flowIdService.marshalToString(current)), message.headers().getAll(flowIdService.key()));
+            assertEquals("preserved", message.headers().get("unrelated"));
+            assertEquals(1, delivery.nextCalls);
+            handler.handleOutbound(new StubDeliveryContext(message));
+            assertEquals(1, message.headers().getAll(flowIdService.key()).size());
+            context.completeNow();
+        }));
+    }
+
+    @Test
+    void handleInbound_malformedProvider_continuesWithFollowingProvider(Vertx vertx, VertxTestContext context) {
+        EventBusTransportHandler isolated = new EventBusTransportHandler(
+            () -> List.of(new FailingService(), flowIdService));
+        vertx.runOnContext(ignored -> context.verify(() -> {
+            FlowId expected = FlowId.builder().withId("valid").build();
+            StubMessage message = new StubMessage(null);
+            message.headers().add("broken", "invalid base64!");
+            message.headers().add(flowIdService.key(), flowIdService.marshalToString(expected));
+            StubDeliveryContext delivery = new StubDeliveryContext(message);
+
+            isolated.handleInbound(delivery);
+
+            assertNull(Storage.get("broken"));
+            assertEquals("valid", ((FlowId) Storage.get(flowIdService.key())).getId());
+            assertEquals(1, delivery.nextCalls);
+            context.completeNow();
+        }));
+    }
+
+    @Test
+    void handleOutbound_failingProvider_continuesWithFollowingProvider(Vertx vertx, VertxTestContext context) {
+        EventBusTransportHandler isolated = new EventBusTransportHandler(
+            () -> List.of(new FailingService(), flowIdService));
+        vertx.runOnContext(ignored -> context.verify(() -> {
+            FlowId value = FlowId.builder().withId("valid").build();
+            Storage.put("broken", value);
+            Storage.put(flowIdService.key(), value);
+            StubDeliveryContext delivery = new StubDeliveryContext(new StubMessage(null));
+
+            isolated.handleOutbound(delivery);
+
+            assertNull(delivery.message().headers().get("broken"));
+            assertEquals(flowIdService.marshalToString(value), delivery.message().headers().get(flowIdService.key()));
+            assertEquals(1, delivery.nextCalls);
+            context.completeNow();
+        }));
+    }
+
+    private static final class FailingService extends FlowIdService {
+        @Override
+        public String key() {
+            return "broken";
+        }
+
+        @Override
+        public String marshalToString(ContextChainDataItem model) {
+            throw new IllegalArgumentException("Serialization failed");
+        }
+    }
+
 	private static final class StubDeliveryContext implements DeliveryContext<Object> {
 		private final Message<Object> message;
 		private boolean nextCalled;
+        private int nextCalls;
 
 		private StubDeliveryContext(Message<Object> message) {
 			this.message = message;
@@ -125,6 +205,7 @@ class EventBusTransportHandlerTest {
 		@Override
 		public void next() {
 			nextCalled = true;
+            nextCalls++;
 		}
 
 		@Override
