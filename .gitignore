@@ -3,3 +3,4 @@
 !/.gitignore
 !/.github
 target
+/src/test/generated/

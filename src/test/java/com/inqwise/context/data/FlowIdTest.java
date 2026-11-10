@@ -14,6 +14,28 @@ import io.vertx.core.json.JsonObject;
 
 class FlowIdTest {
 
+    @Test
+    void jsonConstructor_sourceOrOutputMutation_doesNotChangeFlowId() {
+        JsonObject source = new JsonObject().put(FlowId.Keys.ID, "original").put(FlowId.Keys.TIMESTAMP, 123L);
+        FlowId flow = new FlowId(source);
+
+        source.put(FlowId.Keys.ID, "source-changed");
+        flow.toJson().put(FlowId.Keys.ID, "output-changed").put(FlowId.Keys.TIMESTAMP, 456L);
+
+        assertEquals("original", flow.getId());
+        assertEquals(Instant.ofEpochMilli(123L), flow.getTimestamp());
+    }
+
+    @Test
+    void builder_reusedAfterBuild_doesNotChangePreviouslyBuiltValue() {
+        FlowId.Builder builder = FlowId.builder().withId("first").withTimestamp(Instant.ofEpochMilli(123L));
+        FlowId first = builder.build();
+        FlowId second = builder.withId("second").withTimestamp(Instant.ofEpochMilli(456L)).build();
+        assertEquals("first", first.getId());
+        assertEquals(Instant.ofEpochMilli(123L), first.getTimestamp());
+        assertEquals("second", second.getId());
+    }
+
 	@Test
 	void builderPopulatesJson() {
 		Instant timestamp = Instant.parse("2024-03-18T10:15:30Z");

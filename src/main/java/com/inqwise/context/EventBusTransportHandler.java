@@ -1,12 +1,14 @@
 package com.inqwise.context;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Supplier;
 
 import com.inqwise.context.spi.ContextChainDataService;
+import com.inqwise.context.ContextPropagationException.Direction;
 
-import io.vertx.core.Vertx;
 import io.vertx.core.eventbus.DeliveryContext;
+import io.vertx.core.internal.ContextInternal;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -24,49 +26,81 @@ class EventBusTransportHandler {
     }
 
     public void handleInbound(DeliveryContext<Object> event) {
+        ContextInternal context = ContextInternal.current();
         try {
-            if (Vertx.currentContext() != null) {
+            if (context != null) {
                 var headers = event.message().headers();
                 for (var provider : dataProviders.get()) {
                     try {
-                        var headerValue = headers.get(provider.key());
-                        if (headerValue != null) {
-                            DefaultStorage.put(provider.key(), provider.unmarshalFormString(headerValue));
+                        String key = provider.key();
+                        if (!headers.contains(key)) {
+                            continue;
+                        }
+                        boolean replaceExisting = provider.replaceExistingOnInbound();
+                        if (!replaceExisting && DefaultStorage.getEntry(context, key) != null) {
+                            continue;
+                        }
+                        List<String> values = headers.getAll(key);
+                        if (values.size() != 1) {
+                            throw new IllegalArgumentException("Expected exactly one metadata header value");
+                        }
+                        String headerValue = values.getFirst();
+                        if (provider.isRemoval(headerValue)) {
+                            DefaultStorage.remove(context, key, replaceExisting);
+                        } else {
+                            DefaultStorage.put(context, key, provider.unmarshalFormString(headerValue), replaceExisting);
                         }
                     } catch (Exception e) {
-                        logProviderFailure("inbound", provider, e);
+                        reportFailure(context, Direction.INBOUND, provider, e);
                     }
                 }
             }
         } catch (Throwable e) {
-            logger.error("unexpected error in handleInbound", e);
+            reportFailure(context, Direction.INBOUND, null, e);
+        } finally {
+            event.next();
         }
-        event.next();
     }
 
     public void handleOutbound(DeliveryContext<Object> event) {
+        ContextInternal context = ContextInternal.current();
         try {
-            if (Vertx.currentContext() != null) {
+            if (context != null) {
                 for (var provider : dataProviders.get()) {
                     try {
-                        var storageValue = DefaultStorage.get(provider.key());
+                        String key = provider.key();
+                        var storageValue = DefaultStorage.getEntry(context, key);
                         if (storageValue != null) {
-                            event.message().headers().set(provider.key(), provider.marshalToString(storageValue));
+                            var headers = event.message().headers();
+                            // Never fall back to stale metadata if the current state cannot be encoded.
+                            headers.remove(key);
+                            String encoded = DefaultStorage.isRemoved(storageValue)
+                                ? provider.marshalRemovalToString()
+                                : Objects.requireNonNull(provider.marshalToString(storageValue), "Encoded metadata is mandatory");
+                            if (encoded != null) {
+                                headers.set(key, encoded);
+                            }
                         }
                     } catch (Exception e) {
-                        logProviderFailure("outbound", provider, e);
+                        reportFailure(context, Direction.OUTBOUND, provider, e);
                     }
                 }
             }
         } catch (Throwable e) {
-            logger.error("unexpected error in handleOutbound", e);
+            reportFailure(context, Direction.OUTBOUND, null, e);
+        } finally {
+            event.next();
         }
-        event.next();
     }
 
-    private static void logProviderFailure(String direction, ContextChainDataService provider, Exception error) {
-        // Serializer exception messages can contain sensitive header values.
-        logger.error("Context propagation failed: direction={}, provider={}, exception={}",
-            direction, provider.getClass().getName(), error.getClass().getName());
+    private static void reportFailure(ContextInternal context, Direction direction,
+            ContextChainDataService provider, Throwable error) {
+        ContextPropagationException failure = new ContextPropagationException(direction, provider, error);
+        try {
+            context.reportException(failure);
+        } catch (Throwable observerError) {
+            // An application's error observer must not interrupt optional metadata transport.
+            logger.error("{}; exception handler failed: {}", failure.getMessage(), observerError.getClass().getName());
+        }
     }
 }
