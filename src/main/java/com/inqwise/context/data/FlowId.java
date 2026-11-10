@@ -41,8 +41,8 @@ public class FlowId implements ContextChainDataItem {
 		timestamp = Optional.ofNullable(json.getLong(Keys.TIMESTAMP)).map(Instant::ofEpochMilli).orElse(null);
 	}
 	
-	private String id;
-	private Instant timestamp;
+	private final String id;
+	private final Instant timestamp;
 
 	private FlowId(Builder builder) {
 		this.id = builder.id;

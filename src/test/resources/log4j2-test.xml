@@ -8,6 +8,9 @@
 		</Console>
 	</Appenders>
 	<Loggers>
+        <Logger name="com.hazelcast" level="warn" additivity="false">
+            <AppenderRef ref="Console"/>
+        </Logger>
 		<Logger name="io.netty" level="warn" additivity="false">
 			<AppenderRef ref="Console"/>
 		</Logger>

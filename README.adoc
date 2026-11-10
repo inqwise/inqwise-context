@@ -26,6 +26,115 @@ CI tests JDK 21, 22, 25, and 27. Newer build JDKs are rejected by Maven Enforcer
 Run `mvn test` for tests and coverage, or `mvn verify` to also check packaging and Javadocs.
 JaCoCo generates HTML and XML reports under `target/site/jacoco`.
 
+== FlowId Wire Transport
+
+Storage access requires an active Vert.x context. Deployed verticle lifecycle callbacks and message handlers already provide one; no `runOnContext` wrapper is needed there.
+Calling `Storage.get`, `Storage.put`, or `Storage.remove` from an ordinary Java thread is an execution error and throws `IllegalStateException` rather than silently dropping metadata.
+A missing item within a valid context still returns `null`.
+
+`FlowId` is an immutable value containing an optional ID and timestamp.
+The EventBus transport serializes it under `flow_id` and restores its values before the receiving handler runs.
+The receiving service gets a new Java instance with the same ID and timestamp; an existing `FlowId` in that context is preserved.
+Consequently, replies, including replies from a service that explicitly replaced its own stored value, do not overwrite the caller's original instance.
+`Storage.put("flow_id", replacement)` remains available for intentional local replacement.
+Other data providers retain their previous inbound replacement behavior unless they opt out through `replaceExistingOnInbound()`.
+
+Replacement and removal change the current context and propagate on calls and replies, including inside a deployed ServiceProxy implementation:
+
+[source,java]
+----
+FlowId incoming = (FlowId) Storage.get("flow_id");
+FlowId replacement = FlowId.builderFrom(incoming).withId("service-flow").build();
+Storage.put("flow_id", replacement);
+
+FlowId removed = (FlowId) Storage.remove("flow_id"); // returns replacement
+// Subsequent calls and replies carry removal instead of the old value.
+Storage.put("flow_id", replacement); // explicitly re-add before the next call
+----
+
+Removal leaves a deletion marker: `Storage.get("flow_id")` returns `null`, and incoming replies cannot silently restore it.
+`FlowId` transports this as `flow-id:1:remove:` under the same `flow_id` header for every codec profile, replacing stale explicit headers.
+Removal follows exactly the same inbound replacement policy as `put`: an empty receiving context imports and forwards the marker, while an existing `FlowId` or deletion marker is preserved.
+Thus a downstream removal travels back in a reply but does not erase a caller's existing `FlowId`, just as a downstream replacement does not overwrite it.
+An explicit local `Storage.put` re-adds a value and replaces the marker.
+Providers that allow inbound replacement apply incoming removals even to existing values; providers without removal encoding continue to omit the outgoing header.
+
+[source,text]
+----
+A removes -> B imports removal -> C imports removal
+A stays removed <- B stays removed <- C replies with removal
+
+A has flow-A -> B receives flow-A and removes it
+A retains flow-A <- B replies with removal
+----
+
+The writer profile is selected by the `inqwise.context.flow-id.codec` JVM property before creating Vert.x; the service captures it when constructed:
+
+[cols="1,2",options="header"]
+|===
+|Profile |Wire format
+|`legacy` (default) |Unversioned Base64 JSON, readable by older library releases.
+|`json` |`flow-id:1:json:` followed by readable JSON.
+|`gzip` |`flow-id:1:gzip:` followed by Base64 of gzipped JSON.
+|===
+
+For example, use `-Dinqwise.context.flow-id.codec=json` for readable metadata.
+Every new reader accepts all three profiles regardless of its own writer setting.
+Upgrade readers before enabling versioned writers: older releases only understand `legacy`.
+Wire-level removal requires updated readers even when using the legacy value codec. Older readers cannot interpret the removal marker; optional propagation error handling keeps delivery running but cannot preserve removal across those nodes.
+Compression precedes Base64 encoding; gzip can increase the size of short IDs and is therefore opt-in.
+Timestamps retain millisecond precision. Decoded JSON payloads are limited to 64 KiB, including after decompression; oversized headers, unknown versions/codecs, and corrupt compressed input are rejected.
+Metadata propagation is optional by default. Codec and transport-level failures are reported as a sanitized `ContextPropagationException` through the captured context's exception handler, falling back to `vertx.exceptionHandler(...)` or default logging.
+During service discovery, unloadable providers are skipped with a warning that excludes the original error message and cause details. Successfully loaded providers are cached; if discovery cannot enumerate further entries, it retains those already loaded. Restart after correcting service registration or provider configuration.
+Each provider must declare a stable, non-blank header key. Discovery keeps the first valid registration for a header, ignoring case when detecting conflicts. Providers with conflicting or unusable keys are skipped with a warning; the selected key retains its original spelling in `Storage`.
+The report contains direction, provider class, failure type, and the original stack frames, but omits the original message and cause chain to avoid logging metadata payloads.
+Interceptors continue message delivery and process remaining providers after a provider failure. Even an exception thrown by the error observer does not stop delivery.
+Inbound import requires exactly one header value per metadata key. Duplicate values, including a value paired with a removal marker or differently cased header names, are reported and not imported. When the provider preserves an existing local value or removal marker, incoming headers are ignored without decoding.
+When storage contains an explicit value or removal, its stale outgoing headers are cleared before encoding. If encoding fails, that key is omitted rather than sending an older value; local storage remains unchanged. Explicit headers for keys absent from storage remain available.
+Public `Storage` access remains strict, while interceptors use explicit context-based storage access internally.
+
+An application that requires metadata should reject that message explicitly in its handler, making the failure visible in the caller's request future:
+
+[source,java]
+----
+if (Storage.get("flow_id") == null) {
+    message.fail(422, "Required FlowId is missing");
+    return;
+}
+----
+
+This does not convert application or subsequent interceptor exceptions into optional propagation failures.
+
+`ClusteredFlowIdTransportTest` starts three Vert.x nodes in a private Hazelcast cluster, using loopback TCP and ephemeral ports with multicast and automatic discovery disabled.
+Consumers exist only on the receiving node, so requests and replies cross the clustered EventBus network transport.
+The 55 cases cover every sender/receiver codec pair, unchanged and replaced remote values, failure replies, overlapping flows, messages without metadata, and generated ServiceProxy calls across three deployed verticles.
+All three profiles round-trip a 64 KiB UTF-8 JSON payload over TCP. Codec tests also reject payloads one byte over the limit and gzip streams with truncated or damaged trailers.
+They also cover removal, stale-header suppression, explicit re-addition, and removal while a network reply is pending.
+Removal markers are checked across three nodes and on return to both empty callers and callers with existing values.
+They assert distinct remote instances with matching values and preservation of the caller's original instance.
+All nodes in this class run in one test JVM; separate-process coverage is provided below. Neither suite covers TLS, node loss, or network partitions.
+Run this coverage with `mvn -Dtest=ClusteredFlowIdTransportTest test`; it is also included in the standard test suite and closes its nodes after execution.
+
+The ServiceProxy scenarios run on event-loop and worker verticles, with legacy, JSON, and gzip writers on A, B, and C respectively:
+
+[source,text]
+----
+A adds flow-A -> B receives flow-A, replaces with flow-B -> C receives flow-B, replaces or removes it
+A retains flow-A <- B retains flow-B <- C replies or fails
+----
+
+The tests assert values and local object identity at every stage, without manual context wrappers inside the verticles.
+The test-only service interface is processed during test compilation; generated proxy and handler sources under `src/test/generated` are excluded from version control.
+
+`ForkedClusterFlowIdTransportTest` deploys the same generated ServiceProxy contract across three JVMs: A runs in the test process, B is an event-loop verticle in a JSON-writing child JVM, and C is a worker verticle in a gzip-writing child JVM. A writes legacy values.
+Its six scenarios cover unchanged values, replacement, removal, forwarding an existing removal, explicit re-addition, and failure replies.
+Three additional repeated cases each launch a batch of 12 concurrent calls mixing all six scenarios. A test-only barrier confirms all 12 requests overlap on both remote nodes before allowing replies, with bounded waits through per-request timers rather than blocking the event loop or worker.
+Unique request tokens and timestamps detect cross-request leakage, and each node verifies local object identity after its timer and downstream return, including failure paths.
+The tests verify distinct process IDs, incoming request and reply headers, timestamps, and preservation of local instances on return, including a subsequent timer callback.
+Each child has independent provider discovery and JVM codec configuration; there is no shared Java heap between nodes.
+The fixture uses a private loopback Hazelcast cluster with ephemeral ports and bounded readiness waits. It closes child stdin for graceful shutdown, checks normal exit, and forcibly terminates any child that exceeds its shutdown timeout.
+Run just this coverage with `mvn -Dtest=ForkedClusterFlowIdTransportTest test`; it also runs in the standard test suite and requires permission to launch Java child processes and bind loopback ports.
+
 == Client Context Compatibility
 
 The compatibility tests check that a stored `ContextChainDataItem` remains the exact same Java object in the calling context and its asynchronous continuations.

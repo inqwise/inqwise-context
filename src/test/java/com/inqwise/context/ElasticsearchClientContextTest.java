@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 @ExtendWith(VertxExtension.class)
 @Timeout(10)
@@ -45,7 +46,7 @@ class ElasticsearchClientContextTest {
             CompletableFuture.runAsync(() -> {
                 try {
                     assertNull(Vertx.currentContext());
-                    assertNull(Storage.get(ClientContextTestSupport.KEY));
+                    assertThrows(IllegalStateException.class, () -> Storage.get(ClientContextTestSupport.KEY));
                     if (fail) {
                         transport.response.completeExceptionally(failure);
                     } else {
