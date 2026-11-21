@@ -2,6 +2,8 @@ package com.inqwise.context;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.util.Base64;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.ServiceConfigurationError;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -41,7 +43,9 @@ class EventBusPropagationFailureTest {
     private static final String SECRET = "private-metadata-value";
 
     private enum MalformedHeader {
-        UNKNOWN_VERSION, VALUE_THEN_REMOVAL, REMOVAL_THEN_VALUE, DUPLICATE_VALUE
+        UNKNOWN_VERSION, VALUE_THEN_REMOVAL, REMOVAL_THEN_VALUE, DUPLICATE_VALUE,
+        MALFORMED_UTF8, MALFORMED_JSON_TEXT, FRACTIONAL_TIMESTAMP, OVERFLOWING_TIMESTAMP,
+        NON_STRING_IDENTIFIER, ESCAPED_SURROGATE_IDENTIFIER
     }
 
     @ParameterizedTest
@@ -100,6 +104,17 @@ class EventBusPropagationFailureTest {
         String removal = codec.marshalRemovalToString();
         return switch (malformed) {
             case UNKNOWN_VERSION -> options().addHeader("flow_id", "flow-id:99:json:" + SECRET);
+            case MALFORMED_UTF8 -> options().addHeader("flow_id", Base64.getEncoder()
+                .encodeToString(HexFormat.of().parseHex("7b226964223a22c0af227d")));
+            case MALFORMED_JSON_TEXT -> options().addHeader("flow_id", "flow-id:1:json:{\"id\":\"" + SECRET + "\uD800\"}");
+            case FRACTIONAL_TIMESTAMP -> options().addHeader("flow_id",
+                "flow-id:1:json:{\"id\":\"" + SECRET + "\",\"timestamp\":1.5}");
+            case OVERFLOWING_TIMESTAMP -> options().addHeader("flow_id",
+                "flow-id:1:json:{\"id\":\"" + SECRET + "\",\"timestamp\":9223372036854775808}");
+            case NON_STRING_IDENTIFIER -> options().addHeader("flow_id",
+                "flow-id:1:json:{\"id\":{\"nested\":\"" + SECRET + "\"}}");
+            case ESCAPED_SURROGATE_IDENTIFIER -> options().addHeader("flow_id",
+                "flow-id:1:json:{\"id\":\"" + SECRET + "\\uD800\"}");
             case VALUE_THEN_REMOVAL -> options().addHeader("flow_id", value).addHeader("FLOW_ID", removal);
             case REMOVAL_THEN_VALUE -> options().addHeader("flow_id", removal).addHeader("FLOW_ID", value);
             case DUPLICATE_VALUE -> options().addHeader("flow_id", value).addHeader("flow_id", value);
@@ -109,7 +124,7 @@ class EventBusPropagationFailureTest {
     @ParameterizedTest
     @MethodSource("writerFailures")
     void request_failedWriterAndErrorObserver_doNotBlockHealthyProviderOrSubsequentMessages(
-            boolean observerThrows, boolean removed, Vertx vertx, VertxTestContext context) {
+            boolean observerThrows, boolean removed, String failureKind, Vertx vertx, VertxTestContext context) {
         List<Throwable> errors = new CopyOnWriteArrayList<>();
         AtomicReference<Context> callerContext = new AtomicReference<>();
         AtomicReference<Context> reportedContext = new AtomicReference<>();
@@ -126,7 +141,14 @@ class EventBusPropagationFailureTest {
                 return "healthy";
             }
         };
-        EventBusTransportHandler writer = new EventBusTransportHandler(() -> List.of(new BrokenWriter(), healthy));
+        Class<? extends Throwable> failureType = switch (failureKind) {
+            case "linkage" -> NoClassDefFoundError.class;
+            case "assertion" -> AssertionError.class;
+            case "service" -> ServiceConfigurationError.class;
+            case "stack" -> UnreadableStackError.class;
+            default -> IllegalArgumentException.class;
+        };
+        EventBusTransportHandler writer = new EventBusTransportHandler(() -> List.of(new BrokenWriter(failureKind), healthy));
         EventBusTransportHandler reader = new EventBusTransportHandler(() -> List.of(healthy));
         vertx.eventBus().addOutboundInterceptor(writer::handleOutbound);
         vertx.eventBus().addInboundInterceptor(reader::handleInbound);
@@ -158,7 +180,8 @@ class EventBusPropagationFailureTest {
                 }
                 assertEquals(1, errors.size());
                 assertSame(callerContext.get(), reportedContext.get());
-                assertFailure(errors.getFirst(), Direction.OUTBOUND, BrokenWriter.class.getName(), IllegalArgumentException.class);
+                assertFailure(errors.getFirst(), Direction.OUTBOUND, BrokenWriter.class.getName(),
+                    failureType);
                 return reply;
             });
         })).compose(ignored -> inFlow(vertx, "second", item -> {
@@ -227,10 +250,28 @@ class EventBusPropagationFailureTest {
 
     private static Stream<Arguments> writerFailures() {
         return Stream.of(false, true).flatMap(observerThrows -> Stream.of(false, true)
-            .map(removed -> Arguments.of(observerThrows, removed)));
+            .flatMap(removed -> Stream.of("exception", "linkage", "assertion", "service", "stack")
+                .map(kind -> Arguments.of(observerThrows, removed, kind))));
+    }
+
+    private static final class UnreadableStackError extends AssertionError {
+        private UnreadableStackError() {
+            super(SECRET);
+        }
+
+        @Override
+        public StackTraceElement[] getStackTrace() {
+            throw new IllegalStateException(SECRET);
+        }
     }
 
     private static final class BrokenWriter extends FlowIdService {
+        private final String failureKind;
+
+        private BrokenWriter(String failureKind) {
+            this.failureKind = failureKind;
+        }
+
         @Override
         public String key() {
             return "broken";
@@ -238,11 +279,35 @@ class EventBusPropagationFailureTest {
 
         @Override
         public String marshalToString(ContextChainDataItem model) {
+            if (failureKind.equals("stack")) {
+                throw new UnreadableStackError();
+            }
+            if (failureKind.equals("linkage")) {
+                throw new NoClassDefFoundError(SECRET);
+            }
+            if (failureKind.equals("assertion")) {
+                throw new AssertionError(SECRET);
+            }
+            if (failureKind.equals("service")) {
+                throw new ServiceConfigurationError(SECRET, new IllegalStateException(SECRET));
+            }
             throw new IllegalArgumentException(SECRET, new IllegalStateException(SECRET));
         }
 
         @Override
         public String marshalRemovalToString() {
+            if (failureKind.equals("stack")) {
+                throw new UnreadableStackError();
+            }
+            if (failureKind.equals("linkage")) {
+                throw new NoClassDefFoundError(SECRET);
+            }
+            if (failureKind.equals("assertion")) {
+                throw new AssertionError(SECRET);
+            }
+            if (failureKind.equals("service")) {
+                throw new ServiceConfigurationError(SECRET, new IllegalStateException(SECRET));
+            }
             throw new IllegalArgumentException(SECRET, new IllegalStateException(SECRET));
         }
     }

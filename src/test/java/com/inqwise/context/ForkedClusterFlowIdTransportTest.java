@@ -10,16 +10,20 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import com.inqwise.context.data.FlowId;
 import com.inqwise.context.data.FlowIdService;
 import com.inqwise.context.data.FlowIdService.CodecProfile;
 import com.inqwise.context.proxy.ClusterFlowService;
+import io.vertx.core.DeploymentOptions;
 import io.vertx.core.Future;
+import io.vertx.core.ThreadingModel;
 import io.vertx.core.VerticleBase;
 import io.vertx.core.Vertx;
 import io.vertx.core.eventbus.DeliveryOptions;
 import io.vertx.core.eventbus.ReplyException;
+import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.json.JsonObject;
 import io.vertx.serviceproxy.ServiceProxyBuilder;
 import io.vertx.spi.cluster.hazelcast.HazelcastClusterManager;
@@ -31,6 +35,8 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.RepeatedTest;
 
@@ -38,6 +44,7 @@ import static com.inqwise.context.ClusterTestSupport.await;
 import static com.inqwise.context.ClusterTestSupport.clusterConfig;
 import static com.inqwise.context.ClusterTestSupport.startNode;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -195,6 +202,91 @@ class ForkedClusterFlowIdTransportTest {
         } finally {
             await(Future.join(deployed.stream().map(sender::undeploy).toList()));
         }
+    }
+
+    @ParameterizedTest
+    @MethodSource("pendingMutationModes")
+    void serviceProxy_pendingCallerMutations_surviveRepliesAcrossThreeJvms(
+            ThreadingModel model, boolean removal) throws Exception {
+        String batch = UUID.randomUUID().toString();
+        List<String> actions = List.of("replace", "remove", "fail");
+        List<Future<String>> pending = new ArrayList<>();
+        List<String> deployed = new CopyOnWriteArrayList<>();
+        AtomicInteger verified = new AtomicInteger();
+        try {
+            for (String action : actions) {
+                pending.add(sender.deployVerticle(new VerticleBase() {
+                    @Override
+                    public Future<?> start() {
+                        ContextInternal caller = ContextInternal.current();
+                        assertEquals(model, caller.threadingModel());
+                        assertEquals(model == ThreadingModel.VIRTUAL_THREAD, Thread.currentThread().isVirtual());
+                        assertNull(Storage.get("flow_id"));
+                        FlowId original = FlowId.builder().withId(batch + "-" + action).build();
+                        FlowId current = FlowId.builder().withId(batch + "-current-" + action).build();
+                        Storage.put("flow_id", original);
+                        ClusterFlowService service = new ServiceProxyBuilder(vertx).setAddress(bAddress)
+                            .setOptions(new DeliveryOptions().setSendTimeout(5_000)).build(ClusterFlowService.class);
+                        JsonObject command = new JsonObject().put("action", action).put("batch", batch)
+                            .put("size", actions.size()).put("token", action);
+                        Future<String> reply = service.process(command.encode());
+                        assertFalse(reply.isComplete());
+                        if (removal) {
+                            assertSame(original, Storage.remove("flow_id"));
+                        } else {
+                            Storage.put("flow_id", current);
+                        }
+                        return reply.transform(result -> {
+                            assertSame(caller, ContextInternal.current());
+                            assertEquals(model == ThreadingModel.VIRTUAL_THREAD, Thread.currentThread().isVirtual());
+                            assertEquals(action.equals("fail"), result.failed());
+                            JsonObject report;
+                            if (result.failed()) {
+                                ReplyException failure = assertInstanceOf(ReplyException.class, result.cause());
+                                assertEquals(73, failure.failureCode());
+                                report = new JsonObject(failure.getMessage());
+                            } else {
+                                report = new JsonObject(result.result());
+                            }
+                            assertEquals(action, report.getString("token"));
+                            assertEquals(actions.size(), report.getInteger("peersSeen"));
+                            assertEquals(actions.size(), report.getJsonObject("child").getInteger("peersSeen"));
+                            verifyReport(action, original, false, report);
+                            assertCurrent(caller, current, removal);
+                            return vertx.timer(1).map(ignored -> {
+                                assertSame(caller, ContextInternal.current());
+                                assertEquals(model == ThreadingModel.VIRTUAL_THREAD, Thread.currentThread().isVirtual());
+                                assertCurrent(caller, current, removal);
+                                verified.incrementAndGet();
+                                return ignored;
+                            });
+                        });
+                    }
+                }, new DeploymentOptions().setThreadingModel(model)).andThen(result -> {
+                    if (result.succeeded()) {
+                        deployed.add(result.result());
+                    }
+                }));
+            }
+            await(Future.join(pending));
+            assertEquals(actions.size(), verified.get());
+        } finally {
+            await(Future.join(deployed.stream().map(sender::undeploy).toList()));
+        }
+    }
+
+    private static void assertCurrent(ContextInternal caller, FlowId current, boolean removal) {
+        if (removal) {
+            assertNull(Storage.get("flow_id"));
+            assertTrue(DefaultStorage.isRemoved(DefaultStorage.getEntry(caller, "flow_id")));
+        } else {
+            assertSame(current, Storage.get("flow_id"));
+        }
+    }
+
+    private static Stream<Arguments> pendingMutationModes() {
+        return Stream.of(ThreadingModel.EVENT_LOOP, ThreadingModel.WORKER, ThreadingModel.VIRTUAL_THREAD)
+            .flatMap(model -> Stream.of(false, true).map(removal -> Arguments.of(model, removal)));
     }
 
     private Future<String> deployScenario(String action, FlowId original, JsonObject command,

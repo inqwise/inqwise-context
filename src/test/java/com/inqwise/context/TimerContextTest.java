@@ -2,17 +2,26 @@ package com.inqwise.context;
 
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
+import com.inqwise.context.data.FlowId;
+import io.vertx.core.DeploymentOptions;
 import io.vertx.core.Future;
+import io.vertx.core.Handler;
 import io.vertx.core.Promise;
+import io.vertx.core.ThreadingModel;
 import io.vertx.core.Timer;
+import io.vertx.core.VerticleBase;
 import io.vertx.core.Vertx;
+import io.vertx.core.internal.ContextInternal;
 import io.vertx.junit5.VertxExtension;
 import io.vertx.junit5.VertxTestContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import static com.inqwise.context.ClientContextTestSupport.assertContext;
@@ -27,6 +36,80 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @ExtendWith(VertxExtension.class)
 @Timeout(10)
 class TimerContextTest {
+    @ParameterizedTest
+    @MethodSource("deploymentTimers")
+    void deployedTimer_eachThreadingModel_preservesContextAndStoredInstance(ThreadingModel model,
+            String api, Vertx vertx, VertxTestContext context) {
+        vertx.exceptionHandler(context::failNow);
+        vertx.deployVerticle(new VerticleBase() {
+            @Override
+            public Future<?> start() {
+                ContextInternal caller = ContextInternal.current();
+                FlowId original = FlowId.builder().withId("deployed-timer").build();
+                Storage.put("flow_id", original);
+                assertDeployedContext(model, caller, original);
+                Promise<Void> completion = Promise.promise();
+                AtomicInteger ticks = new AtomicInteger();
+                Handler<Long> callback = timerId -> {
+                    try {
+                        assertDeployedContext(model, caller, original);
+                        if (ticks.incrementAndGet() == (api.equals("periodic") ? 3 : 1)) {
+                            if (api.equals("periodic")) {
+                                assertTrue(vertx.cancelTimer(timerId));
+                            }
+                            completion.complete();
+                        }
+                    } catch (Throwable failure) {
+                        if (api.equals("periodic")) {
+                            vertx.cancelTimer(timerId);
+                        }
+                        completion.tryFail(failure);
+                    }
+                };
+                switch (api) {
+                    case "setTimer" -> vertx.setTimer(1, callback);
+                    case "periodic" -> vertx.setPeriodic(1, ContextPropagation.bindHandler(callback));
+                    case "timer", "cancel" -> {
+                        boolean cancel = api.equals("cancel");
+                        Timer timer = vertx.timer(cancel ? 60_000 : 1);
+                        timer.onComplete(result -> {
+                            try {
+                                assertEquals(cancel, result.failed());
+                                if (cancel) {
+                                    assertInstanceOf(CancellationException.class, result.cause());
+                                }
+                                callback.handle(-1L);
+                            } catch (Throwable failure) {
+                                completion.tryFail(failure);
+                            }
+                        });
+                        if (cancel) {
+                            assertTrue(timer.cancel());
+                        }
+                    }
+                    default -> throw new IllegalArgumentException("Unknown timer API");
+                }
+                return ContextPropagation.bind(completion.future()).map(done -> {
+                    assertDeployedContext(model, caller, original);
+                    assertEquals(api.equals("periodic") ? 3 : 1, ticks.get());
+                    return done;
+                });
+            }
+        }, new DeploymentOptions().setThreadingModel(model)).onComplete(context.succeedingThenComplete());
+    }
+
+    private static void assertDeployedContext(ThreadingModel model, ContextInternal caller, FlowId original) {
+        assertSame(caller, ContextInternal.current());
+        assertEquals(model, caller.threadingModel());
+        assertEquals(model == ThreadingModel.VIRTUAL_THREAD, Thread.currentThread().isVirtual());
+        assertSame(original, Storage.get("flow_id"));
+    }
+
+    private static Stream<Arguments> deploymentTimers() {
+        return Stream.of(ThreadingModel.EVENT_LOOP, ThreadingModel.WORKER, ThreadingModel.VIRTUAL_THREAD)
+            .flatMap(model -> Stream.of("setTimer", "timer", "cancel", "periodic").map(api -> Arguments.of(model, api)));
+    }
+
     @Test
     void setTimer_callbackAndContinuation_preserveSameInstance(Vertx vertx, VertxTestContext context) {
         inFlow(vertx, "caller", item -> {

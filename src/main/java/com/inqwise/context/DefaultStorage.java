@@ -68,6 +68,11 @@ class DefaultStorage {
         return value == Removed.INSTANCE;
     }
 
+    // Used only on new ingress contexts; live-flow removal must retain its marker.
+    static void reset(ContextInternal context) {
+        context.removeLocal(STORAGE_CONTEXT, CONCURRENT);
+    }
+
     private static ContextInternal currentContext() {
         ContextInternal ctx = ContextInternal.current();
         if (ctx == null) {

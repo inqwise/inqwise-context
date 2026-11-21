@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.HexFormat;
 import java.util.stream.Stream;
 import java.util.zip.GZIPOutputStream;
 
@@ -22,6 +23,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import com.inqwise.context.data.FlowIdService.CodecProfile;
+import io.vertx.core.json.JsonObject;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
@@ -32,6 +34,112 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class FlowIdServiceTest {
 
 	private final FlowIdService service = new FlowIdService();
+
+    @ParameterizedTest
+    @MethodSource("escapedInvalidIdentifiers")
+    void unmarshal_escapedUnpairedSurrogate_rejectsAfterJsonParsing(CodecProfile profile, String escaped) throws IOException {
+        String encoded = jsonHeader(profile, "{\"id\":\"" + escaped + "\"}");
+        assertThrows(IllegalArgumentException.class, () -> new FlowIdService(profile).unmarshalFormString(encoded));
+    }
+
+    @ParameterizedTest
+    @MethodSource("malformedJsonText")
+    void marshal_identifierWithUnpairedSurrogate_rejectsBeforeEncoding(CodecProfile profile, String id) {
+        FlowId invalid = FlowId.builder().withId(id).build();
+        assertThrows(IllegalArgumentException.class, () -> new FlowIdService(profile).marshalToString(invalid));
+    }
+
+    @ParameterizedTest
+    @MethodSource("escapedValidIdentifiers")
+    void unmarshal_validEscapedUnicode_preservesIdentifier(CodecProfile profile, String escaped, String expected) throws IOException {
+        FlowIdService codec = new FlowIdService(profile);
+        FlowId decoded = (FlowId) codec.unmarshalFormString(jsonHeader(profile, "{\"id\":\"" + escaped + "\"}"));
+        assertEquals(expected, decoded.getId());
+        assertEquals(expected, ((FlowId) codec.unmarshalFormString(codec.marshalToString(decoded))).getId());
+    }
+
+    private static Stream<Arguments> escapedInvalidIdentifiers() {
+        return Arrays.stream(CodecProfile.values()).flatMap(profile -> Stream.of("\\uD800", "\\uDC00",
+            "before\\uD800after", "\\uDC00\\uD800").map(escaped -> Arguments.of(profile, escaped)));
+    }
+
+    private static Stream<Arguments> escapedValidIdentifiers() {
+        return Arrays.stream(CodecProfile.values()).flatMap(profile -> Stream.of(
+            Arguments.of(profile, "\\uD83D\\uDE80", "\uD83D\uDE80"),
+            Arguments.of(profile, "before\\uD83D\\uDE80after", "before\uD83D\uDE80after"),
+            Arguments.of(profile, "\\u0394\\n", "\u0394\n")));
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidIdentifiers")
+    void unmarshal_nonStringIdentifier_rejectsInsteadOfStringifying(CodecProfile profile, String value) throws IOException {
+        String encoded = jsonHeader(profile, "{\"id\":" + value + "}");
+        assertThrows(IllegalArgumentException.class, () -> new FlowIdService(profile).unmarshalFormString(encoded));
+    }
+
+    @ParameterizedTest
+    @MethodSource("validIdentifiers")
+    void unmarshal_stringOrNullIdentifier_preservesTextExactly(CodecProfile profile, String value) throws IOException {
+        FlowIdService codec = new FlowIdService(profile);
+        String encoded = jsonHeader(profile, new JsonObject().put("id", value).encode());
+        FlowId decoded = (FlowId) codec.unmarshalFormString(encoded);
+        assertEquals(value, decoded.getId());
+        assertEquals(value, ((FlowId) codec.unmarshalFormString(codec.marshalToString(decoded))).getId());
+    }
+
+    private static Stream<Arguments> invalidIdentifiers() {
+        return Arrays.stream(CodecProfile.values()).flatMap(profile -> Stream.of("123", "1.5", "true", "[]", "{}", "{\"nested\":1}")
+            .map(value -> Arguments.of(profile, value)));
+    }
+
+    private static Stream<Arguments> validIdentifiers() {
+        return Arrays.stream(CodecProfile.values()).flatMap(profile -> Stream.of("", "123", "true", "[]", "  retained  ", null)
+            .map(value -> Arguments.of(profile, value)));
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidTimestamps")
+    void unmarshal_nonIntegerOrOutOfRangeTimestamp_rejectsInsteadOfNarrowing(
+            CodecProfile profile, String timestamp) throws IOException {
+        String encoded = timestampHeader(profile, timestamp);
+        assertThrows(IllegalArgumentException.class, () -> new FlowIdService(profile).unmarshalFormString(encoded));
+    }
+
+    @ParameterizedTest
+    @MethodSource("validTimestamps")
+    void unmarshal_signedLongTimestampBoundary_preservesExactMilliseconds(
+            CodecProfile profile, String timestamp) throws IOException {
+        FlowIdService codec = new FlowIdService(profile);
+        FlowId decoded = (FlowId) codec.unmarshalFormString(timestampHeader(profile, timestamp));
+        assertEquals("schema", decoded.getId());
+        assertEquals(timestamp.equals("null") ? null : Instant.ofEpochMilli(Long.parseLong(timestamp)), decoded.getTimestamp());
+        assertEquals(decoded.toJson(), ((FlowId) codec.unmarshalFormString(codec.marshalToString(decoded))).toJson());
+    }
+
+    private static Stream<Arguments> invalidTimestamps() {
+        return Arrays.stream(CodecProfile.values()).flatMap(profile -> Stream.of("1.5", "-0.5", "1.0", "1e3", "1e20",
+            "9223372036854775808", "-9223372036854775809").map(timestamp -> Arguments.of(profile, timestamp)));
+    }
+
+    private static Stream<Arguments> validTimestamps() {
+        return Arrays.stream(CodecProfile.values()).flatMap(profile -> Stream.of("0", "-1", "2147483648",
+            Long.toString(Long.MIN_VALUE), Long.toString(Long.MAX_VALUE), "null")
+            .map(timestamp -> Arguments.of(profile, timestamp)));
+    }
+
+    private static String timestampHeader(CodecProfile profile, String timestamp) throws IOException {
+        String json = "{\"id\":\"schema\",\"timestamp\":" + timestamp + "}";
+        return jsonHeader(profile, json);
+    }
+
+    private static String jsonHeader(CodecProfile profile, String json) throws IOException {
+        byte[] payload = json.getBytes(StandardCharsets.UTF_8);
+        return switch (profile) {
+            case LEGACY -> Base64.getEncoder().encodeToString(payload);
+            case JSON -> "flow-id:1:json:" + json;
+            case GZIP -> gzipHeader(payload);
+        };
+    }
 
 	@Test
 	void marshalAndUnmarshalRoundTrip() {
@@ -68,7 +176,7 @@ class FlowIdServiceTest {
     @ParameterizedTest
     @MethodSource("profiles")
     void transport_allWriterReaderProfiles_preserveFlowValues(CodecProfile writer, CodecProfile reader) {
-        FlowId original = FlowId.builder().withId("request: \"quoted\"\\path\n\u0394")
+        FlowId original = FlowId.builder().withId("request: \"quoted\"\\path\n\u0394\uD83D\uDE80")
             .withTimestamp(Instant.parse("2026-11-08T10:00:00.123Z")).build();
         String encoded = new FlowIdService(writer).marshalToString(original);
 
@@ -85,6 +193,37 @@ class FlowIdServiceTest {
         FlowIdService codec = new FlowIdService(profile);
         FlowId decoded = (FlowId) codec.unmarshalFormString(codec.marshalToString(FlowId.builder().build()));
         assertTrue(decoded.toJson().isEmpty());
+    }
+
+    @ParameterizedTest
+    @MethodSource("malformedJsonText")
+    void unmarshal_readableJsonWithMalformedText_rejectsWithoutReplacingCharacters(CodecProfile reader, String id) {
+        String encoded = "flow-id:1:json:{\"id\":\"" + id + "\"}";
+        assertThrows(IllegalArgumentException.class, () -> new FlowIdService(reader).unmarshalFormString(encoded));
+    }
+
+    private static Stream<Arguments> malformedJsonText() {
+        return Arrays.stream(CodecProfile.values()).flatMap(reader ->
+            Stream.of("\uD800", "\uDC00", "before\uD800after", "\uDC00\uD800").map(id -> Arguments.of(reader, id)));
+    }
+
+    @ParameterizedTest
+    @MethodSource("malformedUtf8Payloads")
+    void unmarshal_binaryPayloadWithMalformedUtf8_rejectsInsteadOfAcceptingInvalidUnicode(
+            CodecProfile reader, boolean compressed, String hex) throws IOException {
+        ByteArrayOutputStream payload = new ByteArrayOutputStream();
+        payload.writeBytes("{\"id\":\"".getBytes(StandardCharsets.US_ASCII));
+        payload.writeBytes(HexFormat.of().parseHex(hex));
+        payload.writeBytes("\"}".getBytes(StandardCharsets.US_ASCII));
+        String encoded = compressed ? gzipHeader(payload.toByteArray())
+            : Base64.getEncoder().encodeToString(payload.toByteArray());
+        assertThrows(IllegalArgumentException.class, () -> new FlowIdService(reader).unmarshalFormString(encoded));
+    }
+
+    private static Stream<Arguments> malformedUtf8Payloads() {
+        return Arrays.stream(CodecProfile.values()).flatMap(reader -> Stream.of(false, true)
+            .flatMap(compressed -> Stream.of("ff", "c0af", "eda080", "f4908080", "e282", "80")
+                .map(hex -> Arguments.of(reader, compressed, hex))));
     }
 
     @Test
