@@ -68,6 +68,82 @@ class KafkaContextTransportTest {
     private static final ContextLocal<Object> foreignLocal = ContextLocal.registerLocal(Object.class);
 
     @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void sender_nullManagedHeader_stripsStaleMetadataWithoutMutatingInput(
+            boolean allowed, Vertx vertx, VertxTestContext context) {
+        vertx.exceptionHandler(context::failNow);
+        MockProducer<String, String> nativeProducer = mockProducer();
+        KafkaProducer<String, String> producer = KafkaProducer.create(vertx, nativeProducer);
+        var sender = KafkaContextTransport.sender(producer, "orders");
+        inFlow(vertx, "caller", ignored -> {
+            ContextInternal caller = ContextInternal.current();
+            FlowId original = FlowId.builder().withId("caller").build();
+            Storage.put("flow_id", original);
+            KafkaProducerRecord<String, String> input = KafkaProducerRecord.create(allowed ? "orders" : "external", "key", "payload");
+            input.addHeader("application", "retained");
+            input.addHeader(KafkaContextCarrier.name("flow_id"), (Buffer) null);
+            return sender.send(input).compose(ack -> {
+                assertSame(caller, ContextInternal.current());
+                assertSame(original, Storage.get("flow_id"));
+                assertEquals(input.topic(), ack.getTopic());
+                assertEquals(2, input.headers().size());
+                assertEquals("retained", input.headers().getFirst().value().toString());
+                assertNull(input.headers().getLast().value());
+                ProducerRecord<String, String> sent = nativeProducer.history().getFirst();
+                assertEquals("payload", sent.value());
+                assertEquals("retained", new String(sent.headers().lastHeader("application").value(),
+                    java.nio.charset.StandardCharsets.UTF_8));
+                var metadata = new KafkaContextCarrier(() -> consumed(sent, 0).headers()).getAll("flow_id");
+                if (allowed) {
+                    assertEquals(original.toJson(), ((FlowId) new FlowIdService().unmarshalFormString(metadata.getFirst())).toJson());
+                } else {
+                    assertTrue(metadata.isEmpty());
+                }
+                return vertx.timer(1).map(tick -> {
+                    assertSame(caller, ContextInternal.current());
+                    assertSame(original, Storage.get("flow_id"));
+                    return tick;
+                });
+            });
+        }).eventually(producer::close).onComplete(context.succeedingThenComplete());
+    }
+
+    @Test
+    void sender_nullApplicationHeader_preservesNativeFailureAndAllowsNextSend(Vertx vertx, VertxTestContext context) {
+        vertx.exceptionHandler(context::failNow);
+        MockProducer<String, String> nativeProducer = mockProducer();
+        KafkaProducer<String, String> producer = KafkaProducer.create(vertx, nativeProducer);
+        var sender = KafkaContextTransport.sender(producer, "orders");
+        inFlow(vertx, "caller", ignored -> {
+            ContextInternal caller = ContextInternal.current();
+            FlowId original = FlowId.builder().withId("caller").build();
+            Storage.put("flow_id", original);
+            KafkaProducerRecord<String, String> input = KafkaProducerRecord.create("orders", "key", "payload");
+            input.addHeader("application", (Buffer) null);
+            RuntimeException nativeFailure = assertThrows(RuntimeException.class, () -> producer.send(input));
+            return sender.send(input).transform(result -> {
+                assertTrue(result.failed());
+                assertEquals(nativeFailure.getClass(), result.cause().getClass());
+                assertEquals(nativeFailure.getMessage(), result.cause().getMessage());
+                assertSame(caller, ContextInternal.current());
+                assertSame(original, Storage.get("flow_id"));
+                assertEquals(1, input.headers().size());
+                assertNull(input.headers().getFirst().value());
+                assertTrue(nativeProducer.history().isEmpty());
+                return vertx.timer(1);
+            }).compose(tick -> {
+                assertSame(caller, ContextInternal.current());
+                assertSame(original, Storage.get("flow_id"));
+                return sender.send(KafkaProducerRecord.create("orders", "next", "delivered"));
+            }).map(ack -> {
+                assertSame(original, Storage.get("flow_id"));
+                assertEquals("delivered", nativeProducer.history().getFirst().value());
+                return ack;
+            });
+        }).eventually(producer::close).onComplete(context.succeedingThenComplete());
+    }
+
+    @ParameterizedTest
     @MethodSource("synchronousFailureModes")
     void sender_synchronousRecordFailure_returnsCallerFutureAndAllowsNextSend(
             ThreadingModel model, String state, boolean headerFailure, Vertx vertx, VertxTestContext testContext) {

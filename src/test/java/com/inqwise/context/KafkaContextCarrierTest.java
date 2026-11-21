@@ -17,6 +17,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -145,18 +146,34 @@ class KafkaContextCarrierTest {
     }
 
     @ParameterizedTest
-    @ValueSource(ints = {0, 1, 2, 3})
+    @ValueSource(ints = {0, 1, 2, 3, 4, 5})
     void carrier_invalidValues_rejectNullVersionAndUtf8(int mode) {
         Buffer value = switch (mode) {
             case 0 -> null;
             case 1 -> Buffer.buffer("2:value");
             case 2 -> Buffer.buffer(new byte[] {'1', ':', (byte) 0xff});
+            case 4 -> Buffer.buffer();
+            case 5 -> Buffer.buffer("1;");
             default -> Buffer.buffer("1");
         };
         List<KafkaHeader> headers = new ArrayList<>();
         headers.add(KafkaHeader.header(KafkaContextCarrier.name("flow_id"), value));
         KafkaContextCarrier carrier = new KafkaContextCarrier(() -> headers);
         assertThrows(IllegalArgumentException.class, () -> carrier.getAll("flow_id"));
+    }
+
+    @Test
+    void aggregate_nullUnknownMetadataValue_countsItsKeyWithoutMutatingIt() {
+        List<KafkaHeader> headers = new ArrayList<>();
+        KafkaHeader unknown = KafkaHeader.header(KafkaContextCarrier.name("unknown"), (Buffer) null);
+        headers.add(unknown);
+        KafkaContextCarrier carrier = new KafkaContextCarrier(() -> headers);
+        carrier.set("flow_id", "retained");
+        assertEquals(List.of("retained"), carrier.getAll("flow_id"));
+        assertSame(unknown, headers.getFirst());
+        assertNull(unknown.value());
+        carrier.remove("flow_id");
+        assertEquals(List.of(unknown), headers);
     }
 
     @Test
