@@ -265,6 +265,14 @@ These overlapping records also forward through a shared sender after asynchronou
 Mixed-transport tests exercise loopback HTTP/1.1 and direct TLS HTTP/3 -> mocked Kafka -> local EventBus with replacements and removals at every stage. HTTP/3 cases explicitly configure and verify that protocol on both peers, using trusted temporary certificates with hostname verification enabled. They verify caller values, caller removal markers, empty callers, timer callbacks, and isolation of private storage. The HTTP response contains the HTTP producer's current state, not changes made by the Kafka consumer. Tests explicitly coordinate consumer completion; this does not turn Kafka acknowledgments into RPC replies. EventBus replies still apply the normal FlowId inbound preservation policy.
 The reverse Kafka -> HTTP direction uses a native Vert.x consumer wrapping `MockConsumer` and a shared WebClient session over loopback HTTP/1.1. Two records overlap before either HTTP server response is released, starting with a wire value and missing metadata respectively. Across all three deployed threading models, each consumer asynchronously replaces or removes its FlowId before sending; allowed origins receive that state and denied origins receive no managed metadata. HTTP server replacements/removals cannot overwrite the consumer's current state, response and timer callbacks retain its scope, and private storage stays local to each record without changing consumer-parent storage.
 
+=== Kafka Advisory Triage
+
+Reviewed on 2026-11-21: the CI OWASP report matches `kafka-clients:4.2.0` to `CVE-2026-41115` through the generic Apache Kafka CPE and rates it medium (CVSS 4.3), below the configured failure threshold of 7. The dependency graph supplies this client through the optional/provided Vert.x Kafka client; it does not supply a Kafka broker.
+
+The https://kafka.apache.org/community/cve-list/#CVE-2026-41115[Apache advisory] identifies a documentation/ACL discrepancy for `CONSUMER_GROUP_DESCRIBE` and confirms that `DESCRIBE` on `GROUP` is the correct authorization check. Operators must review broker group ACLs for least privilege; changing this library's client version alone does not perform that review. The adapter neither implements broker authorization nor manages ACLs, and its topic allowlist restricts metadata propagation, not Kafka access.
+
+No suppression or dependency override is applied for this finding. This assessment is specific to this advisory, not a security clearance for other Kafka findings or consuming deployments.
+
 == FlowId Wire Transport
 
 Storage access requires an active Vert.x context. Deployed verticle lifecycle callbacks and message handlers already provide one; no `runOnContext` wrapper is needed there.
