@@ -14,25 +14,34 @@ jobs:
   snyk-info:
     name: Snyk Configuration Check
     runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.configuration.outputs.enabled }}
     steps:
       - name: Check Snyk Token and provide info
+        id: configuration
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           if [ -z "$SNYK_TOKEN" ]; then
-            echo "ℹ️ Snyk security scanning is not configured."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Snyk scans are skipped because SNYK_TOKEN is not configured."
             echo "To enable Snyk scanning, add SNYK_TOKEN to repository secrets."
             echo "Visit https://snyk.io to get your token."
-            echo "This is optional - the build will continue without security scanning."
           else
-            echo "✅ Snyk token is configured. Security scanning will run on appropriate triggers."
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "Snyk token is configured. Security scanning will run on appropriate triggers."
           fi
 
   snyk:
     name: Snyk Security Scan
     runs-on: ubuntu-latest
+    needs: snyk-info
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
     # Run on PR, releases, and monthly schedule (free tier optimized)
-    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: needs.snyk-info.outputs.enabled == 'true' && (github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
 
     steps:
       - name: Checkout code
@@ -48,13 +57,13 @@ jobs:
       - name: Build project
         run: mvn clean compile -DskipTests
 
+      - name: Set up Snyk CLI
+        uses: snyk/actions/setup@11b673cfb4b0dc0d860a1323caa199d54950dcce
+
       - name: Run Snyk to check for vulnerabilities
-        uses: snyk/actions/maven@master
-        continue-on-error: true
+        run: snyk test --severity-threshold=high --sarif-file-output=snyk.sarif
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          args: --severity-threshold=high --sarif-file-output=snyk.sarif
 
       - name: Upload Snyk results to GitHub Code Scanning
         uses: github/codeql-action/upload-sarif@v4
@@ -65,8 +74,9 @@ jobs:
   snyk-monitor:
     name: Snyk Monitor
     runs-on: ubuntu-latest
+    needs: snyk-info
     # Only monitor on tags/releases to conserve free tier usage
-    if: startsWith(github.ref, 'refs/tags/')
+    if: needs.snyk-info.outputs.enabled == 'true' && startsWith(github.ref, 'refs/tags/')
 
     steps:
       - name: Checkout code
@@ -82,19 +92,20 @@ jobs:
       - name: Build project
         run: mvn clean compile -DskipTests
 
+      - name: Set up Snyk CLI
+        uses: snyk/actions/setup@11b673cfb4b0dc0d860a1323caa199d54950dcce
+
       - name: Run Snyk monitor
-        uses: snyk/actions/maven@master
+        run: snyk monitor --project-name=inqwise-context
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          command: monitor
-          args: --project-name=inqwise-context
 
   snyk-container:
     name: Snyk Container Scan
     runs-on: ubuntu-latest
+    needs: snyk-info
     # Only run on releases and manual dispatch to conserve free tier
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    if: needs.snyk-info.outputs.enabled == 'true' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')
 
     steps:
       - name: Checkout code
@@ -119,10 +130,10 @@ jobs:
           EOF
           docker build -f Dockerfile.scan -t inqwise-context:scan .
 
+      - name: Set up Snyk CLI
+        uses: snyk/actions/setup@11b673cfb4b0dc0d860a1323caa199d54950dcce
+
       - name: Run Snyk to check Docker image for vulnerabilities
-        uses: snyk/actions/docker@master
+        run: snyk container test inqwise-context:scan --severity-threshold=high
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          image: inqwise-context:scan
-          args: --severity-threshold=high
