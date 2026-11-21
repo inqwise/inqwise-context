@@ -8,6 +8,9 @@ package com.inqwise.context.spi;
  * support concurrent use. Each provider
  * must use a non-blank, stable header key. Header keys are compared without
  * regard to case during discovery; the first valid registration wins.
+ * A typed declaration can supply this key through ContextSlot.key(), so
+ * application access and transport share one identifier. Factory providers are
+ * separate; importing or exporting metadata never initializes missing items.
  */
 public interface ContextChainDataService {
     /**

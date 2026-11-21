@@ -28,6 +28,66 @@ JaCoCo generates HTML and XML reports under `target/site/jacoco`.
 
 The optional Snyk workflow explicitly skips scans when the repository's `SNYK_TOKEN` secret is absent; a skipped scan is not a clean security result. When configured, the CLI runs on the runner's configured JDK rather than inside a Maven action container, and vulnerability findings or scan errors fail the scan step. The separate Snyk GitHub-app status is independent of this workflow.
 
+== Typed Context Items
+
+Applications use type-specific accessors rather than string-keyed storage:
+
+[source,java]
+----
+FlowId existing = FlowIdContext.get();       // nullable; never creates
+FlowId required = FlowIdContext.require();  // fails if absent or removed
+FlowId initial = FlowIdContext.getOrCreate(); // explicit initialization
+
+FlowIdContext.put(replacement);
+FlowId previous = FlowIdContext.remove();
+----
+
+`getOrCreate()` retains an existing instance or atomically constructs and stores an initial value. The built-in FlowId factory creates a random UUID and a current millisecond timestamp. An SPI factory can override it; `getOrCreate(() -> suppliedValue)` explicitly bypasses SPI/default resolution. Failed or null construction leaves no newly stored value. An explicit removal is not absence: creation refuses to revive its marker, and only an intentional `put` reintroduces the item. No read, transport import, reply handler, or codec automatically invokes a factory. Applications choose initialization and required-item validation at their flow boundaries.
+
+`FlowIdContext.slot()` exposes its immutable typed declaration for provider/configuration authors. The handle contains no captured context or stored value and is safe to share; each operation resolves the active Vert.x context. Reads of empty storage do not allocate a map. Calls outside an active context fail explicitly. The old string-keyed `Storage` facade is now package-private implementation support, not a public API.
+
+External modules can declare their own items without changing a central library registry:
+
+[source,java]
+----
+public final class TenantContext {
+    public record Tenant(String id) implements ContextChainDataItem {}
+
+    public static final ContextSlot<Tenant> VALUE =
+        ContextSlots.define("tenant", Tenant.class);
+}
+
+TenantContext.VALUE.put(new TenantContext.Tenant("tenant-a"));
+TenantContext.Tenant tenant = TenantContext.VALUE.require();
+----
+
+Declare the key and type once. Typed operations validate values against that type; replacement also checks the existing value atomically, rejecting incompatible data without overwriting it. The item's codec implements `ContextChainDataService` and returns `TenantContext.VALUE.key()` from `key()`; its encoder can validate/cast with `TenantContext.VALUE.type().cast(item)`. Slot declaration does not register a codec or enable propagation. A third argument to `ContextSlots.define` supplies an optional default factory; types requiring application input can omit it. Factories construct values, while aggregate constructors enforce required fields. A concurrent map does not make mutable item internals or read/modify/write sequences atomic.
+
+For an environment-specific FlowId factory:
+
+[source,java]
+----
+package example;
+
+import java.util.UUID;
+import com.inqwise.context.ContextSlot;
+import com.inqwise.context.FlowIdContext;
+import com.inqwise.context.data.FlowId;
+import com.inqwise.context.spi.ContextItemFactory;
+
+public final class OrderFlowIdFactory implements ContextItemFactory<FlowId> {
+    public ContextSlot<FlowId> slot() {
+        return FlowIdContext.slot();
+    }
+
+    public FlowId create() {
+        return FlowId.builder().withId("order-" + UUID.randomUUID()).build();
+    }
+}
+----
+
+Register `example.OrderFlowIdFactory` in `META-INF/services/com.inqwise.context.spi.ContextItemFactory`. Default factory discovery is lazy, cached, and uses the library's defining classloader, independently of the first caller's thread context classloader. Providers must be visible to that loader, concurrency-safe, and must not capture a flow in their constructor. Duplicate exact keys, invalid providers, or mismatched types fail explicit creation; discovery failures are cached without original messages or cause chains. Existing values, reads, removal markers, and explicit factories bypass discovery. There is no global setter or runtime reload. Keep factories fast; do not modify context storage or initialize other slots inside the atomic construction callback.
+
 == Transport Configuration
 
 `ContextTransportConfiguration` is an immutable allowlist for opt-in carrier transport and future protocol adapters. It contains metadata keys, never stored values or captured request contexts.
@@ -42,8 +102,8 @@ ContextTransportConfiguration shared = ContextTransport.defaultConfiguration();
 // Without an application SPI provider, shared.includedKeys() contains only flow_id.
 
 ContextTransportConfiguration explicit = ContextTransportConfiguration.builder()
-    .include("flow_id")
-    .include("tenant_id")
+    .include(FlowIdContext.slot())
+    .include(TenantContext.VALUE)
     .build();
 
 ContextTransportConfiguration selected = ContextTransport.resolveConfiguration(explicit);
@@ -117,7 +177,7 @@ client.getAbs("http://orders.example:8080/orders").send();
 
 // Server application: wrap its core HTTP request handler.
 vertx.createHttpServer().requestHandler(HttpContextTransport.handler(request -> {
-    FlowId flow = (FlowId) Storage.get("flow_id");
+    FlowId flow = FlowIdContext.get();
     request.response().end("processed");
 }));
 ----
@@ -183,7 +243,7 @@ var sender = KafkaContextTransport.sender(producer, "orders");
 sender.send(KafkaProducerRecord.create("orders", "order-key", "payload"));
 
 consumer.handler(KafkaContextTransport.handler(record -> {
-    FlowId flow = (FlowId) Storage.get("flow_id");
+    FlowId flow = FlowIdContext.get();
     process(record);
 }, "orders"));
 ----
@@ -208,7 +268,7 @@ The reverse Kafka -> HTTP direction uses a native Vert.x consumer wrapping `Mock
 == FlowId Wire Transport
 
 Storage access requires an active Vert.x context. Deployed verticle lifecycle callbacks and message handlers already provide one; no `runOnContext` wrapper is needed there.
-Calling `Storage.get`, `Storage.put`, or `Storage.remove` from an ordinary Java thread is an execution error and throws `IllegalStateException` rather than silently dropping metadata.
+Calling a typed slot or `FlowIdContext` operation from an ordinary Java thread is an execution error and throws `IllegalStateException` rather than silently dropping metadata.
 A missing item within a valid context still returns `null`.
 
 `FlowId` is an immutable value containing an optional ID and timestamp.
@@ -216,27 +276,27 @@ Wire identifiers must be JSON strings, or null/absent. Numbers, booleans, arrays
 The EventBus transport serializes it under `flow_id` and restores its values before the receiving handler runs.
 The receiving service gets a new Java instance with the same ID and timestamp; an existing `FlowId` in that context is preserved.
 Consequently, replies, including replies from a service that explicitly replaced its own stored value, do not overwrite the caller's original instance.
-`Storage.put("flow_id", replacement)` remains available for intentional local replacement.
+`FlowIdContext.put(replacement)` remains available for intentional local replacement.
 Other data providers retain their previous inbound replacement behavior unless they opt out through `replaceExistingOnInbound()`.
 
 Replacement and removal change the current context and propagate on calls and replies, including inside a deployed ServiceProxy implementation:
 
 [source,java]
 ----
-FlowId incoming = (FlowId) Storage.get("flow_id");
+FlowId incoming = FlowIdContext.get();
 FlowId replacement = FlowId.builderFrom(incoming).withId("service-flow").build();
-Storage.put("flow_id", replacement);
+FlowIdContext.put(replacement);
 
-FlowId removed = (FlowId) Storage.remove("flow_id"); // returns replacement
+FlowId removed = FlowIdContext.remove(); // returns replacement
 // Subsequent calls and replies carry removal instead of the old value.
-Storage.put("flow_id", replacement); // explicitly re-add before the next call
+FlowIdContext.put(replacement); // explicitly re-add before the next call
 ----
 
-Removal leaves a deletion marker: `Storage.get("flow_id")` returns `null`, and incoming replies cannot silently restore it.
+Removal leaves a deletion marker: `FlowIdContext.get()` returns `null`, and incoming replies cannot silently restore it.
 `FlowId` transports this as `flow-id:1:remove:` under the same `flow_id` header for every codec profile, replacing stale explicit headers.
 Removal follows exactly the same inbound replacement policy as `put`: an empty receiving context imports and forwards the marker, while an existing `FlowId` or deletion marker is preserved.
 Thus a downstream removal travels back in a reply but does not erase a caller's existing `FlowId`, just as a downstream replacement does not overwrite it.
-An explicit local `Storage.put` re-adds a value and replaces the marker.
+An explicit local `FlowIdContext.put` re-adds a value and replaces the marker.
 Providers that allow inbound replacement apply incoming removals even to existing values; providers without removal encoding continue to omit the outgoing header.
 
 [source,text]
@@ -286,7 +346,7 @@ An application that requires metadata should reject that message explicitly in i
 
 [source,java]
 ----
-if (Storage.get("flow_id") == null) {
+if (FlowIdContext.get() == null) {
     message.fail(422, "Required FlowId is missing");
     return;
 }
@@ -354,13 +414,13 @@ Bind results before attaching application continuations, from within the origina
 [source,java]
 ----
 ContextPropagation.bind(elasticsearch.ping())
-    .onSuccess(response -> use(Storage.get("metadata")));
+    .onSuccess(response -> use(FlowIdContext.get()));
 
 ContextPropagation.bind(sharedKafkaConsumer.poll(Duration.ofMillis(100)))
-    .onSuccess(records -> use(Storage.get("metadata")));
+    .onSuccess(records -> use(FlowIdContext.get()));
 
 vertx.setPeriodic(1000, ContextPropagation.bindHandler(timerId ->
-    use(Storage.get("metadata"))));
+    use(FlowIdContext.get())));
 ----
 
 The adapter rebinds the result to the calling context; it does not make raw client threads context-aware or attach metadata to protocol messages.

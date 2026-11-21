@@ -2,13 +2,10 @@ package com.inqwise.context;
 
 import com.inqwise.context.spi.ContextChainDataItem;
 
-import io.vertx.codegen.annotations.VertxGen;
-
 /**
- * Access to metadata stored in the current Vert.x context.
+ * Internal string-keyed access used by transport fixtures and implementation.
  */
-@VertxGen
-public interface Storage {
+interface Storage {
     /**
      * Stores or replaces a value in the current Vert.x context.
      *
