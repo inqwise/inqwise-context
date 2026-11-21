@@ -6,6 +6,8 @@ import static io.vertx.core.spi.context.storage.AccessMode.CONCURRENT;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import com.inqwise.context.spi.ContextChainDataItem;
 
@@ -13,7 +15,9 @@ import io.vertx.core.internal.ContextInternal;
 /**
  * Helper to store data in the local context.
  */
-class DefaultStorage {
+final class DefaultStorage {
+    private DefaultStorage() {
+    }
     private enum Removed implements ContextChainDataItem {
         INSTANCE
     }
@@ -36,6 +40,18 @@ class DefaultStorage {
         } else {
             contextualDataMap(ctx).putIfAbsent(key, value);
         }
+    }
+
+    static <T extends ContextChainDataItem> void put(String key, T value, Class<T> type) {
+        Objects.requireNonNull(key);
+        Objects.requireNonNull(value);
+        Objects.requireNonNull(type);
+        contextualDataMap(currentContext()).compute(key, (ignored, previous) -> {
+            if (!isRemoved(previous)) {
+                type.cast(previous);
+            }
+            return value;
+        });
     }
 
     static ContextChainDataItem get(String key) {
@@ -61,7 +77,33 @@ class DefaultStorage {
     // Include deletion markers when deciding whether to import or transport an entry.
     static ContextChainDataItem getEntry(ContextInternal ctx, String key) {
         Objects.requireNonNull(key);
-        return contextualDataMap(ctx).get(key);
+        ConcurrentMap<?, ?> values = Objects.requireNonNull(ctx).getLocal(STORAGE_CONTEXT, CONCURRENT);
+        return values == null ? null : (ContextChainDataItem) values.get(key);
+    }
+
+    static ContextChainDataItem getOrCreate(String key, Supplier<? extends ContextChainDataItem> factory) {
+        return getOrCreate(currentContext(), key, factory);
+    }
+
+    static ContextChainDataItem getOrCreate(ContextInternal context, String key,
+            Supplier<? extends ContextChainDataItem> factory) {
+        Objects.requireNonNull(key);
+        Objects.requireNonNull(factory);
+        ContextChainDataItem value = contextualDataMap(context).computeIfAbsent(key,
+            ignored -> Objects.requireNonNull(factory.get(), "Context item factory returned null"));
+        if (isRemoved(value)) {
+            throw new IllegalStateException("Context item was explicitly removed; use put to reintroduce it");
+        }
+        return value;
+    }
+
+    static <T extends ContextChainDataItem> T remove(String key, Class<T> type) {
+        AtomicReference<T> previous = new AtomicReference<>();
+        contextualDataMap(currentContext()).compute(key, (ignored, value) -> {
+            previous.set(isRemoved(value) ? null : type.cast(value));
+            return Removed.INSTANCE;
+        });
+        return previous.get();
     }
 
     static boolean isRemoved(ContextChainDataItem value) {
@@ -82,7 +124,7 @@ class DefaultStorage {
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private final static ConcurrentMap<String, ContextChainDataItem> contextualDataMap(ContextInternal ctx) {
+    private static ConcurrentMap<String, ContextChainDataItem> contextualDataMap(ContextInternal ctx) {
         ConcurrentMap lcd = Objects.requireNonNull(ctx).getLocal(STORAGE_CONTEXT, CONCURRENT, ConcurrentHashMap::new);
         return (ConcurrentMap<String, ContextChainDataItem>) lcd;
     }

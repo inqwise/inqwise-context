@@ -62,6 +62,18 @@ public final class ContextTransportConfiguration {
         }
 
         /**
+         * Allows a typed declaration without repeating its wire key. This does
+         * not read storage, resolve factories, or enable transport by itself.
+         *
+         * @param slot the item declaration
+         * @return this builder
+         * @throws NullPointerException if slot is null
+         */
+        public Builder include(ContextSlot<?> slot) {
+            return include(Objects.requireNonNull(slot, "Context slot is mandatory").key());
+        }
+
+        /**
          * Creates a configuration independent of subsequent builder changes.
          *
          * @return an immutable configuration

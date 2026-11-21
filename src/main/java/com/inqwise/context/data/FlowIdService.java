@@ -14,6 +14,7 @@ import java.util.Objects;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
+import com.inqwise.context.FlowIdContext;
 import com.inqwise.context.spi.ContextChainDataService;
 import com.inqwise.context.spi.ContextChainDataItem;
 
@@ -71,7 +72,7 @@ public class FlowIdService implements ContextChainDataService {
 
     @Override
     public String key() {
-        return "flow_id";
+        return FlowIdContext.slot().key();
     }
 
     @Override

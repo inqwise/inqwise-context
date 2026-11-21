@@ -31,7 +31,8 @@ class ContextTransportConfigurationTest {
     @Test
     void include_invalidKeys_rejectsWithoutChangingBuilder() {
         var builder = ContextTransportConfiguration.builder();
-        assertThrows(NullPointerException.class, () -> builder.include(null));
+        assertThrows(NullPointerException.class, () -> builder.include((String) null));
+        assertThrows(NullPointerException.class, () -> builder.include((ContextSlot<?>) null));
         assertThrows(IllegalArgumentException.class, () -> builder.include(""));
         assertThrows(IllegalArgumentException.class, () -> builder.include(" \t\n"));
         assertTrue(builder.build().includedKeys().isEmpty());
