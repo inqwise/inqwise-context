@@ -1,13 +1,16 @@
 package com.inqwise.context;
 
+import java.util.ServiceConfigurationError;
+
 import com.inqwise.context.spi.ContextChainDataService;
 
 /**
- * Reports an optional EventBus metadata propagation failure to the current
+ * Reports an optional metadata propagation failure to the current
  * context's exception handler, falling back to the owning Vert.x handler or
  * default logging. Reporting does not fail message delivery.
  *
- * <p>The exception retains the failure type and stack trace, but omits its
+ * <p>The exception retains the failure type and copies its stack trace when
+ * available, otherwise retaining the reporting trace. It omits the original
  * message and cause chain because codecs may include sensitive payloads there.
  */
 public final class ContextPropagationException extends RuntimeException {
@@ -35,7 +38,11 @@ public final class ContextPropagationException extends RuntimeException {
         this.direction = direction;
         this.providerClassName = provider == null ? null : provider.getClass().getName();
         this.failureType = failure.getClass().getName();
-        setStackTrace(failure.getStackTrace());
+        try {
+            setStackTrace(failure.getStackTrace());
+        } catch (RuntimeException | ServiceConfigurationError | LinkageError | AssertionError unavailable) {
+            // Exception accessors are provider code too; keep this report's own trace on failure.
+        }
     }
 
     /**

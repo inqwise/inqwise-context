@@ -52,6 +52,8 @@
 		<guava.version>33.8.0-jre</guava.version>
 		<log4j2.version>2.26.1</log4j2.version>
 		<vertx.version>5.2.3</vertx.version>
+        <!-- Keep test natives aligned with the Netty version in Vert.x dependencies. -->
+        <netty-quic.version>4.2.20.Final</netty-quic.version>
 		<junit-platform.version>6.1.3</junit-platform.version>
 		<jacoco.plugin.version>0.8.16</jacoco.plugin.version>
 		<elasticsearch-java.version>8.15.3</elasticsearch-java.version>
@@ -100,7 +102,8 @@
             <groupId>io.vertx</groupId>
             <artifactId>vertx-kafka-client</artifactId>
             <version>${vertx.version}</version>
-            <scope>test</scope>
+            <scope>provided</scope>
+            <optional>true</optional>
         </dependency>
         <dependency>
             <groupId>io.vertx</groupId>
@@ -124,12 +127,49 @@
             <groupId>io.vertx</groupId>
             <artifactId>vertx-web-client</artifactId>
             <version>${vertx.version}</version>
-            <scope>test</scope>
+            <scope>provided</scope>
+            <optional>true</optional>
         </dependency>
         <dependency>
             <groupId>io.vertx</groupId>
             <artifactId>vertx-circuit-breaker</artifactId>
             <version>${vertx.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Match the Netty runtime selected by Vert.x; never ship QUIC natives to consumers. -->
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-codec-native-quic</artifactId>
+            <version>${netty-quic.version}</version>
+            <classifier>osx-aarch_64</classifier>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-codec-native-quic</artifactId>
+            <version>${netty-quic.version}</version>
+            <classifier>osx-x86_64</classifier>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-codec-native-quic</artifactId>
+            <version>${netty-quic.version}</version>
+            <classifier>linux-aarch_64</classifier>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-codec-native-quic</artifactId>
+            <version>${netty-quic.version}</version>
+            <classifier>linux-x86_64</classifier>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-codec-native-quic</artifactId>
+            <version>${netty-quic.version}</version>
+            <classifier>windows-x86_64</classifier>
             <scope>test</scope>
         </dependency>
         <dependency>

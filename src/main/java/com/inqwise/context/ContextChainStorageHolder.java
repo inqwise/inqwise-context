@@ -22,8 +22,15 @@ import io.vertx.core.spi.context.storage.ContextLocal;
 
 /**
  * Registers the shared context-local slot and discovers metadata providers.
+ * Providers and registrations must be visible to this library's defining
+ * classloader. Discovery is cached there, independent of the first caller's TCCL.
+ * Recoverable iteration failures are skipped, stopping after 64 consecutive
+ * failures without a loaded candidate and retaining earlier valid providers.
+ * Recoverable diagnostic logging failures do not change provider selection.
  */
 public class ContextChainStorageHolder implements VertxServiceProvider {
+    private static final int MAX_CONSECUTIVE_DISCOVERY_FAILURES = 64;
+
     /**
      * Creates the service provider used during Vert.x bootstrap.
      */
@@ -49,10 +56,11 @@ public class ContextChainStorageHolder implements VertxServiceProvider {
 			synchronized (ContextChainDataService.class) {
 				result = dataProviders;
 				if (null == result) {
-					var loader = ServiceLoader.load(ContextChainDataService.class);
+					var loader = ServiceLoader.load(ContextChainDataService.class,
+                        ContextChainStorageHolder.class.getClassLoader());
 					result = discoverProviders(loader);
 					if (result.isEmpty()) {
-						logger.warn("dataProviders IS EMPTY");
+						warn("dataProviders IS EMPTY");
 					}
 					dataProviders = result;
 				}
@@ -65,38 +73,40 @@ public class ContextChainStorageHolder implements VertxServiceProvider {
         var providers = ImmutableList.<ContextChainDataService>builder();
         Map<String, Class<?>> registered = new HashMap<>();
         var candidates = loader.iterator();
+        int consecutiveFailures = 0;
         while (true) {
+            ContextChainDataService provider;
             try {
                 if (!candidates.hasNext()) {
                     break;
                 }
-            } catch (ServiceConfigurationError failure) {
-                // The iterator may not be able to advance after an enumeration failure.
-                warnDiscoveryFailure("Cannot continue metadata provider discovery", failure);
-                break;
-            }
-            ContextChainDataService provider;
-            try {
                 provider = candidates.next();
-            } catch (ServiceConfigurationError failure) {
+            } catch (RuntimeException | ServiceConfigurationError | LinkageError | AssertionError failure) {
                 warnDiscoveryFailure("Skipping unavailable metadata provider", failure);
+                // ServiceLoader does not guarantee progress after a discovery failure.
+                if (++consecutiveFailures == MAX_CONSECUTIVE_DISCOVERY_FAILURES) {
+                    warn("Stopping metadata provider discovery after {} consecutive failures",
+                        MAX_CONSECUTIVE_DISCOVERY_FAILURES);
+                    break;
+                }
                 continue;
             }
+            consecutiveFailures = 0;
             String key;
             try {
                 key = provider.key();
-            } catch (RuntimeException | LinkageError failure) {
-                logger.warn("Skipping metadata provider {}: cannot read header key ({})",
+            } catch (RuntimeException | ServiceConfigurationError | LinkageError | AssertionError failure) {
+                warn("Skipping metadata provider {}: cannot read header key ({})",
                     provider.getClass().getName(), failure.getClass().getName());
                 continue;
             }
             if (key == null || key.isBlank()) {
-                logger.warn("Skipping metadata provider {}: missing header key", provider.getClass().getName());
+                warn("Skipping metadata provider {}: missing header key", provider.getClass().getName());
                 continue;
             }
             Class<?> previous = registered.putIfAbsent(key.toLowerCase(Locale.ROOT), provider.getClass());
             if (previous != null) {
-                logger.warn("Skipping metadata provider {}: header key already registered by {}",
+                warn("Skipping metadata provider {}: header key already registered by {}",
                     provider.getClass().getName(), previous.getName());
                 continue;
             }
@@ -105,9 +115,25 @@ public class ContextChainStorageHolder implements VertxServiceProvider {
         return providers.build();
     }
 
-    private static void warnDiscoveryFailure(String message, ServiceConfigurationError failure) {
-        Throwable cause = failure.getCause();
-        logger.warn("{}: {}", message, (cause == null ? failure : cause).getClass().getName());
+    private static void warnDiscoveryFailure(String message, Throwable failure) {
+        Throwable diagnostic = failure;
+        try {
+            Throwable cause = failure.getCause();
+            if (cause != null) {
+                diagnostic = cause;
+            }
+        } catch (RuntimeException | ServiceConfigurationError | LinkageError | AssertionError unavailable) {
+            // Diagnostic accessors must not prevent discovery of later providers.
+        }
+        warn("{}: {}", message, diagnostic.getClass().getName());
+    }
+
+    private static void warn(String message, Object... arguments) {
+        try {
+            logger.warn(message, arguments);
+        } catch (Exception | ServiceConfigurationError | LinkageError | AssertionError loggingFailure) {
+            // Diagnostics must not abort discovery or recursively report their own failures.
+        }
     }
 	
 	static ContextChainDataService getDataProvider(String key) {

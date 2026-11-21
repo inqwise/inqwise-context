@@ -3,6 +3,10 @@ package com.inqwise.context.data;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.math.BigInteger;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Locale;
@@ -19,7 +23,9 @@ import io.vertx.core.json.JsonObject;
 /**
  * Transports immutable {@link FlowId} values under the {@code flow_id} key.
  * Writers select a codec profile; readers accept legacy and versioned profiles.
- * JSON timestamps use epoch milliseconds. Decoded payloads are limited to 64 KiB.
+ * JSON identifiers must be well-formed Unicode strings or null. Timestamps use signed 64-bit
+ * integer epoch milliseconds. Decoded payloads must be valid UTF-8 and are
+ * limited to 64 KiB. Readable envelopes reject malformed Java text.
  */
 public class FlowIdService implements ContextChainDataService {
 
@@ -85,7 +91,9 @@ public class FlowIdService implements ContextChainDataService {
 
     @Override
     public String marshalToString(ContextChainDataItem model) {
-        byte[] payload = ((FlowId) model).toJson().toBuffer().getBytes();
+        FlowId flow = (FlowId) model;
+        validateIdentifier(flow.getId());
+        byte[] payload = flow.toJson().toBuffer().getBytes();
         checkSize(payload);
         return switch (profile) {
             case LEGACY -> Base64.getEncoder().encodeToString(payload);
@@ -109,13 +117,52 @@ public class FlowIdService implements ContextChainDataService {
                 throw new IllegalArgumentException("Unsupported FlowId envelope version");
             }
             payload = switch (envelope[2]) {
-                case "json" -> envelope[3].getBytes(StandardCharsets.UTF_8);
+                case "json" -> encodeUtf8(envelope[3]);
                 case "gzip" -> decompress(Base64.getDecoder().decode(envelope[3]));
                 default -> throw new IllegalArgumentException("Unsupported FlowId codec");
             };
         }
         checkSize(payload);
-        return new FlowId(new JsonObject(Buffer.buffer(payload)));
+        validateUtf8(payload);
+        JsonObject json = new JsonObject(Buffer.buffer(payload));
+        Object id = json.getValue(FlowId.Keys.ID);
+        if (id != null && !(id instanceof CharSequence)) {
+            throw new IllegalArgumentException("FlowId id must be a JSON string");
+        }
+        if (id != null) {
+            String identifier = id.toString();
+            validateIdentifier(identifier);
+            json.put(FlowId.Keys.ID, identifier);
+        }
+        Object timestamp = json.getValue(FlowId.Keys.TIMESTAMP);
+        if (timestamp != null && !(timestamp instanceof Byte || timestamp instanceof Short
+                || timestamp instanceof Integer || timestamp instanceof Long
+                || (timestamp instanceof BigInteger integer && integer.bitLength() < Long.SIZE))) {
+            throw new IllegalArgumentException("FlowId timestamp must be a signed 64-bit JSON integer");
+        }
+        return new FlowId(json);
+    }
+
+    private static void validateIdentifier(String id) {
+        if (id != null && !StandardCharsets.UTF_8.newEncoder().canEncode(id)) {
+            throw new IllegalArgumentException("Invalid FlowId identifier text");
+        }
+    }
+
+    private static byte[] encodeUtf8(String text) {
+        if (!StandardCharsets.UTF_8.newEncoder().canEncode(text)) {
+            throw new IllegalArgumentException("Invalid FlowId transport text");
+        }
+        return text.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static void validateUtf8(byte[] payload) {
+        try {
+            StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(payload));
+        } catch (CharacterCodingException failure) {
+            throw new IllegalArgumentException("Invalid FlowId UTF-8 payload");
+        }
     }
 
     private static byte[] compress(byte[] payload) {

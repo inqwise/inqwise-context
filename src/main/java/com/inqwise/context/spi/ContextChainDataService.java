@@ -1,9 +1,11 @@
 package com.inqwise.context.spi;
 
 /**
- * Serializes one metadata type for transport in EventBus headers.
- * Implementations are discovered through {@link java.util.ServiceLoader} and
- * shared across contexts, so they must support concurrent use. Each provider
+ * Serializes one metadata type for context transport.
+ * Implementations and their service registrations must be visible to the
+ * library's defining classloader. They are discovered through
+ * {@link java.util.ServiceLoader} and shared across contexts, so they must
+ * support concurrent use. Each provider
  * must use a non-blank, stable header key. Header keys are compared without
  * regard to case during discovery; the first valid registration wins.
  */
@@ -18,15 +20,17 @@ public interface ContextChainDataService {
      * Serializes a value supported by this provider.
      *
      * @param model the metadata value
-     * @return its transport representation
+     * @return its non-null transport representation
      */
 	String marshalToString(ContextChainDataItem model);
     /**
      * Deserializes a transport representation. The historical method spelling
      * is retained for compatibility with existing providers.
+     * Throw an exception for malformed data. A null result is a codec failure,
+     * not a removal, and leaves existing storage unchanged.
      *
      * @param str the serialized metadata
-     * @return the decoded metadata value
+     * @return the non-null decoded metadata value
      */
 	ContextChainDataItem unmarshalFormString(String str);
 
