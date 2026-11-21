@@ -364,11 +364,24 @@ class HttpContextTransportTest {
         WebClient client = WebClient.create(vertx);
         try {
             for (String invalid : List.of("file:///tmp/", "http://user@localhost", "http://localhost/path",
-                    "http://localhost:0", "http://localhost?query", "http://localhost#fragment")) {
+                    "http://localhost:0", "http://localhost?query", "http://localhost#fragment",
+                    "//localhost", "relative", "http:///missing-host", "http://localhost:65536")) {
                 assertThrows(IllegalArgumentException.class, () -> HttpContextTransport.install(client, URI.create(invalid)));
             }
             assertSame(client, HttpContextTransport.install(client, origin(8080)));
             assertThrows(IllegalArgumentException.class, () -> HttpContextTransport.install(client, origin(8080)));
+        } finally {
+            client.close();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"http://localhost/", "https://localhost", "https://localhost/",
+        "HTTP://LOCALHOST/", "HTTPS://LOCALHOST/"})
+    void install_defaultPortsAndRootPaths_acceptsValidOrigins(String origin, Vertx vertx) {
+        WebClient client = WebClient.create(vertx);
+        try {
+            assertSame(client, HttpContextTransport.install(client, URI.create(origin)));
         } finally {
             client.close();
         }
