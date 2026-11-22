@@ -48,4 +48,15 @@ public final class ContextMapItem<K, V> implements ContextChainDataItem {
     public Map<K, V> snapshot() {
         return snapshot;
     }
+
+    static void validateReplacement(ContextChainDataItem previous, ContextChainDataItem replacement) {
+        if (previous instanceof ContextMapItem<?, ?> before) {
+            if (!(replacement instanceof ContextMapItem<?, ?> after)
+                    || before.keyType != after.keyType || before.valueType != after.valueType) {
+                throw new ClassCastException("Replacement conflicts with stored context map types");
+            }
+        } else if (replacement instanceof ContextMapItem<?, ?>) {
+            throw new ClassCastException("Context map cannot replace an unrelated stored item");
+        }
+    }
 }

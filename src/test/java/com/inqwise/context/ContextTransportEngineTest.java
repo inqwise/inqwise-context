@@ -8,6 +8,7 @@ import java.util.ServiceConfigurationError;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -44,6 +45,71 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @ExtendWith(VertxExtension.class)
 @Timeout(10)
 class ContextTransportEngineTest {
+    @ParameterizedTest
+    @MethodSource("mapImportConflicts")
+    void engine_incompatibleMapImport_preservesItemAndContinuesHealthyProviders(
+            String conflict, boolean populated, boolean observerThrows, Vertx vertx, VertxTestContext test) {
+        List<Throwable> failures = new ArrayList<>();
+        vertx.exceptionHandler(failure -> {
+            failures.add(failure);
+            if (observerThrows) {
+                throw new IllegalStateException("private-observer-data");
+            }
+        });
+        vertx.runOnContext(ignored -> test.verify(() -> {
+            ContextInternal caller = ContextInternal.current();
+            ContextMap<String, Integer> map = ContextMaps.define("map", String.class, Integer.class);
+            map.replace(populated ? Map.of("local", 1) : Map.of());
+            ContextMapItem<String, Integer> original = map.slot().require();
+            AtomicReference<ContextChainDataItem> decoded = new AtomicReference<>(switch (conflict) {
+                case "key" -> ContextMaps.define("map", Integer.class, Integer.class).item(Map.of());
+                case "value" -> ContextMaps.define("map", String.class, Long.class).item(Map.of());
+                case "item" -> new OptionalItem("private-decoded-data");
+                default -> throw new IllegalArgumentException("Unknown conflict");
+            });
+            OptionalCodec codec = new OptionalCodec() {
+                @Override
+                public String key() {
+                    return "map";
+                }
+
+                @Override
+                public ContextChainDataItem unmarshalFormString(String wire) {
+                    return decoded.get();
+                }
+            };
+            FlowIdService healthy = new FlowIdService();
+            MemoryCarrier carrier = new MemoryCarrier();
+            carrier.set("map", "incoming");
+            carrier.set("flow_id", healthy.marshalToString(FlowId.builder().withId("healthy").build()));
+            ContextTransportEngine engine = new ContextTransportEngine(() -> List.of(codec, healthy));
+            engine.read(caller, carrier, Set.of("map", "flow_id"));
+            assertSame(original, map.slot().require());
+            assertEquals("healthy", FlowIdContext.require().getId());
+            assertEquals(1, failures.size());
+            ContextPropagationException failure = assertInstanceOf(ContextPropagationException.class, failures.getFirst());
+            assertEquals(Direction.INBOUND, failure.getDirection());
+            assertEquals(codec.getClass().getName(), failure.getProviderClassName());
+            assertEquals(ClassCastException.class.getName(), failure.getFailureType());
+            assertNull(failure.getCause());
+            assertFalse(failure.toString().contains("private-decoded-data"));
+            ContextMapItem<String, Integer> valid = map.item(Map.of("recovered", 2));
+            decoded.set(valid);
+            engine.read(caller, carrier, Set.of("map", "flow_id"));
+            assertSame(valid, map.slot().require());
+            assertEquals(1, failures.size());
+            carrier.set("map", codec.marshalRemovalToString());
+            engine.read(caller, carrier, Set.of("map", "flow_id"));
+            assertTrue(DefaultStorage.isRemoved(DefaultStorage.getEntry(caller, "map")));
+            test.completeNow();
+        }));
+    }
+
+    private static Stream<Arguments> mapImportConflicts() {
+        return Stream.of("key", "value", "item").flatMap(conflict -> Stream.of(false, true)
+            .flatMap(populated -> Stream.of(false, true).map(observer -> Arguments.of(conflict, populated, observer))));
+    }
+
     @ParameterizedTest
     @MethodSource("decoderFailureModes")
     void engine_invalidDecode_preservesStorageAndRecoversOnNextMessage(

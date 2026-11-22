@@ -38,7 +38,7 @@ final class DefaultStorage {
         Objects.requireNonNull(key);
         Objects.requireNonNull(value);
         if (replaceExisting) {
-            contextualDataMap(ctx).put(key, value);
+            contextualDataMap(ctx).compute(key, (ignored, previous) -> checkedReplacement(previous, value));
         } else {
             contextualDataMap(ctx).putIfAbsent(key, value);
         }
@@ -56,7 +56,7 @@ final class DefaultStorage {
             if (!isRemoved(previous)) {
                 checkedCast.apply(previous);
             }
-            return value;
+            return checkedReplacement(previous, value);
         });
     }
 
@@ -130,8 +130,9 @@ final class DefaultStorage {
             if (previous == null || isRemoved(previous)) {
                 throw new IllegalStateException("Cannot update an absent or removed context item");
             }
-            return checkedCast.apply(Objects.requireNonNull(updater.apply(checkedCast.apply(previous)),
+            T replacement = checkedCast.apply(Objects.requireNonNull(updater.apply(checkedCast.apply(previous)),
                 "Context item updater returned null"));
+            return checkedReplacement(previous, replacement);
         }));
     }
 
@@ -146,6 +147,14 @@ final class DefaultStorage {
 
     static boolean isRemoved(ContextChainDataItem value) {
         return value == Removed.INSTANCE;
+    }
+
+    private static ContextChainDataItem checkedReplacement(ContextChainDataItem previous, ContextChainDataItem value) {
+        // Untyped transport imports must preserve intrinsic container type parameters too.
+        if (previous != null && !isRemoved(previous) && !isRemoved(value)) {
+            ContextMapItem.validateReplacement(previous, value);
+        }
+        return value;
     }
 
     // Used only on new ingress contexts; live-flow removal must retain its marker.

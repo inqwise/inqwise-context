@@ -18,6 +18,8 @@ static final ContextMap<String, Attribute> ATTRIBUTES =
 
 Key/value classes must be reference types. Declaration matching is exact, not inferred from current entries: empty `Map<String,Integer>` and `Map<String,Long>` items conflict under the same storage key. Raw writes and factory results are checked too. `slot().type()` is the erased wrapper class, not a complete generic-type descriptor; codec authors use the bound handle's `cast(item)` instead.
 
+The atomic write boundary also checks replacements coming from untyped transport imports or erased-class slots. A conflicting map declaration, or a map/non-map type change, cannot overwrite an existing item. Inbound conflicts are reported as optional metadata failures while the prior item and healthy providers remain usable. Whole-item removal is still allowed by the inbound policy; explicit replacement after that removal can establish a new item.
+
 Type information belongs to the stored item, not a global declaration registry. An absent item does not reserve its key forever; explicit replacement after whole-item removal creates a new item. Use a stable, unique wire key for each application schema. Class tokens do not describe nested generic arguments; use an application-owned immutable element class when nested structure needs stronger validation than an erased `List.class` or `Map.class` token.
 
 == Initialize And Use Entries
