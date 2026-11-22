@@ -74,13 +74,12 @@ Use `update` to transform one existing immutable item atomically instead of a se
 TenantContext.Tenant replacement = TenantContext.VALUE.update(current ->
     new TenantContext.Tenant(current.id() + "-verified"));
 
-FlowIdContext.update(current -> FlowId.builder()
-    .withId(current.getId() + "-child")
-    .withTimestamp(current.getTimestamp())
-    .build());
+FlowIdContext.put(FlowId.builder().withId("replacement-flow").build());
 ----
 
 The updater runs once for an existing correctly typed value and returns the exact stored replacement; returning the original instance is allowed. It must be short, synchronous, and must not modify context storage or initialize other slots. An absent or removed item fails without invoking the updater or a factory. A null result is invalid: use `remove()` for explicit deletion, and `put()` for intentional reintroduction.
+
+`FlowId` is final and immutable. `FlowIdContext.put(...)` replaces the entire instance, not individual fields. Omitted fields remain absent in the replacement; storage does not merge them from the old value. Use `FlowId.builderFrom(current)` when constructing a replacement that intentionally retains existing fields. The FlowId facade has no dedicated `update` method; callers that need atomic derivation can explicitly use the generic `FlowIdContext.slot().update(...)` operation, which also replaces the complete value.
 
 An exception or invalid result retains the previous reference, but cannot undo in-place mutations performed by application code. Construct a replacement rather than modifying the input. Atomicity covers one slot only; combine values into one immutable item if they must change together. There are no cross-slot or distributed transactions.
 

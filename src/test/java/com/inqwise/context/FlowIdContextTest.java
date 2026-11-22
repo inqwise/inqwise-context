@@ -1,5 +1,6 @@
 package com.inqwise.context;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -33,6 +34,25 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @ExtendWith(VertxExtension.class)
 @Timeout(15)
 class FlowIdContextTest {
+    @Test
+    void slotUpdate_replacementOmitsTimestamp_doesNotMergeFieldsOrMutateOriginal(Vertx vertx, VertxTestContext test) {
+        vertx.runOnContext(ignored -> test.verify(() -> {
+            Instant timestamp = Instant.ofEpochMilli(123L);
+            FlowId original = FlowId.builder().withId("original").withTimestamp(timestamp).build();
+            FlowId replacement = FlowId.builder().withId("replacement").build();
+            FlowIdContext.put(original);
+            assertSame(replacement, FlowIdContext.slot().update(current -> {
+                assertSame(original, current);
+                return replacement;
+            }));
+            assertSame(replacement, FlowIdContext.require());
+            assertNull(FlowIdContext.require().getTimestamp());
+            assertEquals("original", original.getId());
+            assertEquals(timestamp, original.getTimestamp());
+            test.completeNow();
+        }));
+    }
+
     @ParameterizedTest
     @EnumSource(value = ThreadingModel.class, names = {"EVENT_LOOP", "WORKER", "VIRTUAL_THREAD"})
     void update_deployedCallAndReply_propagatesReplacementsUnderExistingPolicies(
@@ -51,7 +71,7 @@ class FlowIdContextTest {
                     assertEquals("updated", FlowIdContext.require().getId());
                     assertNotSame(outgoing, FlowIdContext.require());
                     assertEquals("tenant-updated", TenantContext.VALUE.require().id());
-                    FlowId remote = FlowIdContext.update(current -> FlowId.builder()
+                    FlowId remote = FlowIdContext.slot().update(current -> FlowId.builder()
                         .withId(current.getId() + "-remote").build());
                     TenantContext.Tenant tenant = TenantContext.VALUE.update(current ->
                         new TenantContext.Tenant(current.id() + "-remote"));
@@ -70,7 +90,7 @@ class FlowIdContextTest {
             public Future<?> start() {
                 ContextInternal caller = ContextInternal.current();
                 FlowIdContext.put(original);
-                assertSame(outgoing, FlowIdContext.update(current -> {
+                assertSame(outgoing, FlowIdContext.slot().update(current -> {
                     assertSame(original, current);
                     return outgoing;
                 }));

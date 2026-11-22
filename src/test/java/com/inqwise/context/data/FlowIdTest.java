@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.reflect.Modifier;
 import java.time.Instant;
 
 import org.junit.jupiter.api.Test;
@@ -13,6 +14,11 @@ import org.junit.jupiter.api.Test;
 import io.vertx.core.json.JsonObject;
 
 class FlowIdTest {
+
+    @Test
+    void type_immutableIdentity_cannotBeSubclassed() {
+        assertTrue(Modifier.isFinal(FlowId.class.getModifiers()));
+    }
 
     @Test
     void jsonConstructor_sourceOrOutputMutation_doesNotChangeFlowId() {
