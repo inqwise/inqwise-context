@@ -130,7 +130,9 @@ Returned snapshots/removals follow the codec's `replaceExistingOnInbound()` poli
 
 Tests cover immutable input copies and list views, order and duplicate retention, bounds failures without partial mutation, raw element/declaration misuse, lifecycle rules, and factory matching. Concurrent public appends verify 264 retained positions, eight duplicate elements, distinct assigned indexes, and each writer's relative sequence, using Vert.x-managed tasks.
 
-The shared map/set/list forked fixture discovers real external codecs and factories without optional clients or JUnit. It exercises EventBus request/reply, ordered duplicates, empty snapshots, whole-item removal/reintroduction, timer identity, caller FlowId preservation, and direct HTTP-carrier snapshots across all three deployment modes and FlowId writer profiles. This is not additional live HTTP/Kafka or clustered-list-specific coverage.
+The shared map/set/list forked fixture discovers real external codecs and factories without optional clients or JUnit. It exercises EventBus request/reply, ordered duplicates, empty snapshots, whole-item removal/reintroduction, timer identity, caller FlowId preservation, and direct HTTP-carrier snapshots across all three deployment modes and FlowId writer profiles.
+
+Separate loopback HTTP/1.1 tests use real WebClient/server exchanges and verify sequence/duplicate retention, in-flight caller edits, returned whole-list replacement/removal, absent metadata, private storage isolation, and timer identity. See link:reference.adoc#_collection_transport_coverage[collection transport coverage] for the matrix and limits; these are not live Kafka-broker or clustered-list-specific tests.
 
 [source,shell]
 ----

@@ -125,7 +125,9 @@ Treat received membership as untrusted metadata, not permissions or authenticate
 
 Tests cover defensive copies and iterator protection, equality-based uniqueness, atomic batch failures, empty/removal distinctions, raw misuse and type conflicts, factory matching, concurrent duplicate insertion with exactly one winner, and 256 additional concurrent unique insertions through public APIs on Vert.x-managed tasks.
 
-The shared map/set forked fixture discovers actual external codecs and factories without optional clients or JUnit on its runtime classpath. It checks EventBus request/reply, empty snapshots, whole-item removal, reintroduction, timer identity, caller FlowId preservation, and direct HTTP-carrier snapshots across all three deployment modes and FlowId writer profiles. These are not additional live HTTP/Kafka or clustered-set-specific tests.
+The shared collection forked fixture discovers actual external codecs and factories without optional clients or JUnit on its runtime classpath. It checks EventBus request/reply, empty snapshots, whole-item removal, reintroduction, timer identity, caller FlowId preservation, and direct HTTP-carrier snapshots across all three deployment modes and FlowId writer profiles.
+
+Separate loopback HTTP/1.1 tests exercise real WebClient/server exchanges, including membership changes while a request is pending and returned whole-set replacement/removal. They distinguish absent metadata from empty sets and removal markers without implicit factory calls. See link:reference.adoc#_collection_transport_coverage[collection transport coverage] for the matrix and limits; live Kafka brokers and clustered-set-specific behavior remain outside these tests.
 
 [source,shell]
 ----

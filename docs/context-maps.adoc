@@ -141,7 +141,9 @@ Treat received map contents as untrusted. Whole-item schema validation, applicat
 
 Unit tests cover immutable input copies and collection views, exact generic declarations including empty maps, raw misuse, atomic batches and failures, explicit lifecycle rules, 256 concurrent entry additions, and event-loop/worker/virtual-thread deployment.
 
-Forked core-only applications register real external codec and factory providers. They verify EventBus call/reply, values versus empty snapshots versus removals, explicit reintroduction, timer identity, cached factory discovery, and preservation of the separate FlowId in all three deployment modes and all FlowId writer profiles. Additional direct HTTP-carrier checks validate envelope export/import and send-time snapshots without requiring WebClient. This is not live HTTP/Kafka or clustered-map-specific coverage; existing adapter tests remain separately documented.
+Forked core-only applications register real external codec and factory providers. They verify EventBus call/reply, values versus empty snapshots versus removals, explicit reintroduction, timer identity, cached factory discovery, and preservation of the separate FlowId in all three deployment modes and all FlowId writer profiles. Additional direct HTTP-carrier checks validate envelope export/import and send-time snapshots without requiring WebClient.
+
+Separate loopback HTTP/1.1 tests use real WebClient/server exchanges for all three containers, with coordinated in-flight caller edits, returned replacement/removal, absent metadata, private storage isolation, and timers. See link:reference.adoc#_collection_transport_coverage[collection transport coverage] for the matrix and its limits; this does not add live Kafka-broker or clustered-map-specific validation.
 
 [source,shell]
 ----

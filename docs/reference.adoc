@@ -395,6 +395,25 @@ Each child has independent provider discovery and JVM codec configuration; there
 The fixture uses a private loopback Hazelcast cluster with ephemeral ports and bounded readiness waits. It closes child stdin for graceful shutdown, checks normal exit, and forcibly terminates any child that exceeds its shutdown timeout.
 Run just this coverage with `mvn -Dtest=ForkedClusterFlowIdTransportTest test`; it also runs in the standard test suite and requires permission to launch Java child processes and bind loopback ports.
 
+== Collection Transport Coverage
+
+`ContextCollectionsIntegrationTest` registers external map/set/list codecs and factories in isolated child JVMs. Its core-only runtime exercises EventBus and direct carrier operations without optional clients or JUnit. A separate runtime includes WebClient but excludes Kafka and JUnit, exercising real loopback HTTP/1.1 requests and responses with all three collection types together.
+
+HTTP cases run on event-loop, worker, and virtual-thread callers with each FlowId writer profile. A handshake delays the server response until the caller has changed its own collections, proving that the wire request remains the send-time snapshot while return import applies the codecs' whole-item replacement policy.
+
+[cols="1,2",options="header"]
+|===
+|Sent collection state |Server behavior and caller result
+|Values |Server changes map entries, set membership, and list positions/duplicates. Returned snapshots replace the caller's in-flight changes; older captured snapshots remain unchanged.
+|Present empty |Server receives typed empty values, then removes the whole items. Returned removal markers replace the caller's newer populated collections.
+|Explicit removal |Server imports and verifies the marker state without factory revival, then explicitly replaces it. Returned values replace the caller's independently reintroduced snapshots.
+|Absent |Server receives no collection item or removal marker. Explicit server replacements return normally; neither missing headers nor import invokes initialization factories.
+|===
+
+The server also replaces its FlowId before replying. The caller retains its existing FlowId instance, including an in-flight local replacement or removal marker, independently of collection return policies. Request/response and timer callbacks retain their original contexts and current item references. Private storage is neither exported nor leaked between sequential requests on the shared client, and ordinary payloads/application headers remain unchanged. Responses carrying metadata retain `Cache-Control: no-store`.
+
+This adds direct HTTP/1.1 collection coverage, not collection-specific HTTP/2 or HTTP/3, live Kafka-broker, or clustered-network validation. Those protocols and the generic adapter behavior retain their separately documented test boundaries. Run the collection runtimes with `mvn -Dtest=ContextCollectionsIntegrationTest test`; no external services are required.
+
 == Client Context Compatibility
 
 The compatibility tests check that a stored `ContextChainDataItem` remains the exact same Java object in the calling context and its asynchronous continuations.

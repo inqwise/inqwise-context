@@ -23,6 +23,21 @@ class ContextCollectionsIntegrationTest {
     @ParameterizedTest
     @EnumSource(CodecProfile.class)
     void collections_externalCodecAndFactorySpis_transportSnapshotsWithoutOptionalClients(CodecProfile profile) throws Exception {
+        registerProviders();
+        TransportClasspathTestSupport.runNode(ContextCollectionsNode.class, profile, directory, List.of(), "CONTEXT_COLLECTIONS_OK");
+    }
+
+    @ParameterizedTest
+    @EnumSource(CodecProfile.class)
+    void collections_httpRoundTrip_replacesPendingCallerCollectionsWithoutChangingFlowIdPolicy(CodecProfile profile)
+            throws Exception {
+        registerProviders();
+        TransportClasspathTestSupport.runNode(ContextCollectionsHttpNode.class, profile, directory,
+            List.of("vertx-web-client-", "vertx-web-common-", "vertx-uri-template-", "vertx-auth-common-"),
+            "CONTEXT_COLLECTIONS_HTTP_OK");
+    }
+
+    private void registerProviders() throws Exception {
         Path services = directory.resolve("runtime/META-INF/services");
         Files.createDirectories(services);
         Files.writeString(services.resolve(ContextChainDataService.class.getName()),
@@ -31,6 +46,5 @@ class ContextCollectionsIntegrationTest {
         Files.writeString(services.resolve(ContextItemFactory.class.getName()),
             StringMapContext.Factory.class.getName() + "\n" + StringSetContext.Factory.class.getName() + "\n"
                 + StringListContext.Factory.class.getName() + "\n");
-        TransportClasspathTestSupport.runNode(ContextCollectionsNode.class, profile, directory, List.of(), "CONTEXT_COLLECTIONS_OK");
     }
 }
