@@ -147,6 +147,35 @@ class ContextItemFactoriesTest {
         }
     }
 
+    @Test
+    void factory_listElementType_matchesIndependentlyOfErasedItemClass() throws Exception {
+        try (URLClassLoader loader = isolated(ListFactory.class.getName())) {
+            Class<?> lists = loader.loadClass(ContextLists.class.getName());
+            Object matching = lists.getMethod("define", String.class, Class.class)
+                .invoke(null, "factory-list", String.class);
+            Object slot = matching.getClass().getMethod("slot").invoke(matching);
+            Object item = resolve(loader, slot, null).get();
+            assertEquals(List.of("configured", "configured"), item.getClass().getMethod("snapshot").invoke(item));
+            Object conflict = lists.getMethod("define", String.class, Class.class)
+                .invoke(null, "factory-list", Long.class);
+            Object conflictSlot = conflict.getClass().getMethod("slot").invoke(conflict);
+            assertThrows(IllegalStateException.class, () -> resolve(loader, conflictSlot, null));
+            assertEquals(1, ((AtomicInteger) loader.loadClass(ListFactory.class.getName()).getField("created").get(null)).get());
+        }
+    }
+
+    @Test
+    void factory_erasedListSlot_cannotMatchAListOfListItems() throws Exception {
+        try (URLClassLoader loader = isolated(ErasedListFactory.class.getName())) {
+            Class<?> lists = loader.loadClass(ContextLists.class.getName());
+            Object list = lists.getMethod("define", String.class, Class.class)
+                .invoke(null, "factory-list", loader.loadClass(ContextListItem.class.getName()));
+            Object slot = list.getClass().getMethod("slot").invoke(list);
+            assertThrows(IllegalStateException.class, () -> resolve(loader, slot, null));
+            assertEquals(0, ((AtomicInteger) loader.loadClass(ErasedListFactory.class.getName()).getField("created").get(null)).get());
+        }
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"duplicate", "Failing", "NullSlot", "Missing"})
     void factory_invalidSpi_cachesSanitizedFailure(String scenario) throws Exception {
@@ -286,6 +315,38 @@ class ContextItemFactoriesTest {
         public ContextSetItem create() {
             created.incrementAndGet();
             return ContextSets.define("factory-set", String.class).item(Set.of());
+        }
+    }
+
+    public static final class ListFactory implements ContextItemFactory<ContextListItem<String>> {
+        public static final AtomicInteger created = new AtomicInteger();
+        private static final ContextList<String> LIST = ContextLists.define("factory-list", String.class);
+
+        @Override
+        public ContextSlot<ContextListItem<String>> slot() {
+            return LIST.slot();
+        }
+
+        @Override
+        public ContextListItem<String> create() {
+            created.incrementAndGet();
+            return LIST.item(List.of("configured", "configured"));
+        }
+    }
+
+    @SuppressWarnings("rawtypes")
+    public static final class ErasedListFactory implements ContextItemFactory<ContextListItem> {
+        public static final AtomicInteger created = new AtomicInteger();
+
+        @Override
+        public ContextSlot<ContextListItem> slot() {
+            return ContextSlots.define("factory-list", ContextListItem.class);
+        }
+
+        @Override
+        public ContextListItem create() {
+            created.incrementAndGet();
+            return ContextLists.define("factory-list", String.class).item(List.of());
         }
     }
 }

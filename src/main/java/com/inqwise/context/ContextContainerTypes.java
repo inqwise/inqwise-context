@@ -17,7 +17,12 @@ final class ContextContainerTypes {
             if (!(replacement instanceof ContextSetItem<?> after) || before.elementType() != after.elementType()) {
                 throw new ClassCastException("Replacement conflicts with stored context set type");
             }
-        } else if (replacement instanceof ContextMapItem<?, ?> || replacement instanceof ContextSetItem<?>) {
+        } else if (previous instanceof ContextListItem<?> before) {
+            if (!(replacement instanceof ContextListItem<?> after) || before.elementType() != after.elementType()) {
+                throw new ClassCastException("Replacement conflicts with stored context list type");
+            }
+        } else if (replacement instanceof ContextMapItem<?, ?> || replacement instanceof ContextSetItem<?>
+                || replacement instanceof ContextListItem<?>) {
             throw new ClassCastException("Context container cannot replace an unrelated stored item");
         }
     }

@@ -61,18 +61,31 @@ class ContextTransportEngineTest {
             ContextInternal caller = ContextInternal.current();
             ContextMap<String, Integer> map = ContextMaps.define("container", String.class, Integer.class);
             ContextSet<String> set = ContextSets.define("container", String.class);
-            ContextSlot<?> owner = container.equals("map") ? map.slot() : set.slot();
-            ContextChainDataItem original = container.equals("map")
-                ? map.item(populated ? Map.of("local", 1) : Map.of())
-                : set.item(populated ? Set.of("local") : Set.of());
+            ContextList<String> list = ContextLists.define("container", String.class);
+            ContextSlot<?> owner = switch (container) {
+                case "map" -> map.slot();
+                case "set" -> set.slot();
+                case "list" -> list.slot();
+                default -> throw new IllegalArgumentException("Unknown container");
+            };
+            ContextChainDataItem original = switch (container) {
+                case "map" -> map.item(populated ? Map.of("local", 1) : Map.of());
+                case "set" -> set.item(populated ? Set.of("local") : Set.of());
+                case "list" -> list.item(populated ? List.of("local", "local") : List.of());
+                default -> throw new IllegalArgumentException("Unknown container");
+            };
             DefaultStorage.put(caller, "container", original, true);
             AtomicReference<ContextChainDataItem> decoded = new AtomicReference<>(switch (conflict) {
                 case "key" -> ContextMaps.define("container", Integer.class, Integer.class).item(Map.of());
-                case "value" -> container.equals("map")
-                    ? ContextMaps.define("container", String.class, Long.class).item(Map.of())
-                    : ContextSets.define("container", Long.class).item(Set.of());
+                case "value" -> switch (container) {
+                    case "map" -> ContextMaps.define("container", String.class, Long.class).item(Map.of());
+                    case "set" -> ContextSets.define("container", Long.class).item(Set.of());
+                    case "list" -> ContextLists.define("container", Long.class).item(List.of());
+                    default -> throw new IllegalArgumentException("Unknown container");
+                };
                 case "map" -> map.item(Map.of());
                 case "set" -> set.item(Set.of());
+                case "list" -> list.item(List.of());
                 case "item" -> new OptionalItem("private-decoded-data");
                 default -> throw new IllegalArgumentException("Unknown conflict");
             });
@@ -102,8 +115,12 @@ class ContextTransportEngineTest {
             assertEquals(ClassCastException.class.getName(), failure.getFailureType());
             assertNull(failure.getCause());
             assertFalse(failure.toString().contains("private-decoded-data"));
-            ContextChainDataItem valid = container.equals("map") ? map.item(Map.of("recovered", 2))
-                : set.item(Set.of("recovered"));
+            ContextChainDataItem valid = switch (container) {
+                case "map" -> map.item(Map.of("recovered", 2));
+                case "set" -> set.item(Set.of("recovered"));
+                case "list" -> list.item(List.of("recovered", "recovered"));
+                default -> throw new IllegalArgumentException("Unknown container");
+            };
             decoded.set(valid);
             engine.read(caller, carrier, Set.of("container", "flow_id"));
             assertSame(valid, owner.require());
@@ -116,8 +133,13 @@ class ContextTransportEngineTest {
     }
 
     private static Stream<Arguments> containerImportConflicts() {
-        return Stream.of("map", "set").flatMap(container ->
-            (container.equals("map") ? Stream.of("key", "value", "item", "set") : Stream.of("value", "item", "map"))
+        return Stream.of("map", "set", "list").flatMap(container ->
+            (switch (container) {
+                case "map" -> Stream.of("key", "value", "item", "set", "list");
+                case "set" -> Stream.of("value", "item", "map", "list");
+                case "list" -> Stream.of("value", "item", "map", "set");
+                default -> throw new IllegalArgumentException("Unknown container");
+            })
                 .flatMap(conflict -> Stream.of(false, true).flatMap(populated -> Stream.of(false, true)
                     .map(observer -> Arguments.of(container, conflict, populated, observer)))));
     }

@@ -5,6 +5,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import com.inqwise.context.data.FlowIdService.CodecProfile;
+import com.inqwise.context.extension.StringListContext;
 import com.inqwise.context.extension.StringMapContext;
 import com.inqwise.context.extension.StringSetContext;
 import com.inqwise.context.spi.ContextChainDataService;
@@ -25,9 +26,11 @@ class ContextCollectionsIntegrationTest {
         Path services = directory.resolve("runtime/META-INF/services");
         Files.createDirectories(services);
         Files.writeString(services.resolve(ContextChainDataService.class.getName()),
-            StringMapContext.Codec.class.getName() + "\n" + StringSetContext.Codec.class.getName() + "\n");
+            StringMapContext.Codec.class.getName() + "\n" + StringSetContext.Codec.class.getName() + "\n"
+                + StringListContext.Codec.class.getName() + "\n");
         Files.writeString(services.resolve(ContextItemFactory.class.getName()),
-            StringMapContext.Factory.class.getName() + "\n" + StringSetContext.Factory.class.getName() + "\n");
+            StringMapContext.Factory.class.getName() + "\n" + StringSetContext.Factory.class.getName() + "\n"
+                + StringListContext.Factory.class.getName() + "\n");
         TransportClasspathTestSupport.runNode(ContextCollectionsNode.class, profile, directory, List.of(), "CONTEXT_COLLECTIONS_OK");
     }
 }

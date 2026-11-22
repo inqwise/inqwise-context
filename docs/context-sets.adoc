@@ -4,6 +4,8 @@
 
 `ContextSet<E>` is a shared context-bound handle, not a mutable `java.util.Set`. Stored `ContextSetItem<E>` values retain immutable membership snapshots and their declared element type, including when empty. This follows the link:context-maps.adoc[context map] lifecycle without treating a set as a map of flags.
 
+Use a link:context-lists.adoc[typed context list] when order and duplicate positions matter instead of uniqueness.
+
 == Declare And Initialize
 
 [source,java]
