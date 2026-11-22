@@ -152,7 +152,7 @@ final class DefaultStorage {
     private static ContextChainDataItem checkedReplacement(ContextChainDataItem previous, ContextChainDataItem value) {
         // Untyped transport imports must preserve intrinsic container type parameters too.
         if (previous != null && !isRemoved(previous) && !isRemoved(value)) {
-            ContextMapItem.validateReplacement(previous, value);
+            ContextContainerTypes.validateReplacement(previous, value);
         }
         return value;
     }

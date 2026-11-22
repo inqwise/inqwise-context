@@ -41,7 +41,7 @@ Declare the key and type once. Typed operations validate values against that typ
 
 === Ownership and Atomic Replacement
 
-For standard collections, see link:context-maps.adoc[typed context maps]. Maps build on the same slot and whole-item transport contracts.
+For standard collections, see link:context-maps.adoc[typed context maps] and link:context-sets.adoc[typed context sets]. Both build on the same slot and whole-item transport contracts.
 
 Storage retains exact object references without copying. Prefer immutable items; independently thread-safe mutable items remain the application's responsibility, including consistent encoding by codecs. A slot resolves the current execution context, not a thread-owned value. Neither storage nor transport provides locks around mutable fields.
 

@@ -46,9 +46,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @Timeout(10)
 class ContextTransportEngineTest {
     @ParameterizedTest
-    @MethodSource("mapImportConflicts")
-    void engine_incompatibleMapImport_preservesItemAndContinuesHealthyProviders(
-            String conflict, boolean populated, boolean observerThrows, Vertx vertx, VertxTestContext test) {
+    @MethodSource("containerImportConflicts")
+    void engine_incompatibleContainerImport_preservesItemAndContinuesHealthyProviders(
+            String container, String conflict, boolean populated, boolean observerThrows,
+            Vertx vertx, VertxTestContext test) {
         List<Throwable> failures = new ArrayList<>();
         vertx.exceptionHandler(failure -> {
             failures.add(failure);
@@ -58,19 +59,27 @@ class ContextTransportEngineTest {
         });
         vertx.runOnContext(ignored -> test.verify(() -> {
             ContextInternal caller = ContextInternal.current();
-            ContextMap<String, Integer> map = ContextMaps.define("map", String.class, Integer.class);
-            map.replace(populated ? Map.of("local", 1) : Map.of());
-            ContextMapItem<String, Integer> original = map.slot().require();
+            ContextMap<String, Integer> map = ContextMaps.define("container", String.class, Integer.class);
+            ContextSet<String> set = ContextSets.define("container", String.class);
+            ContextSlot<?> owner = container.equals("map") ? map.slot() : set.slot();
+            ContextChainDataItem original = container.equals("map")
+                ? map.item(populated ? Map.of("local", 1) : Map.of())
+                : set.item(populated ? Set.of("local") : Set.of());
+            DefaultStorage.put(caller, "container", original, true);
             AtomicReference<ContextChainDataItem> decoded = new AtomicReference<>(switch (conflict) {
-                case "key" -> ContextMaps.define("map", Integer.class, Integer.class).item(Map.of());
-                case "value" -> ContextMaps.define("map", String.class, Long.class).item(Map.of());
+                case "key" -> ContextMaps.define("container", Integer.class, Integer.class).item(Map.of());
+                case "value" -> container.equals("map")
+                    ? ContextMaps.define("container", String.class, Long.class).item(Map.of())
+                    : ContextSets.define("container", Long.class).item(Set.of());
+                case "map" -> map.item(Map.of());
+                case "set" -> set.item(Set.of());
                 case "item" -> new OptionalItem("private-decoded-data");
                 default -> throw new IllegalArgumentException("Unknown conflict");
             });
             OptionalCodec codec = new OptionalCodec() {
                 @Override
                 public String key() {
-                    return "map";
+                    return "container";
                 }
 
                 @Override
@@ -80,11 +89,11 @@ class ContextTransportEngineTest {
             };
             FlowIdService healthy = new FlowIdService();
             MemoryCarrier carrier = new MemoryCarrier();
-            carrier.set("map", "incoming");
+            carrier.set("container", "incoming");
             carrier.set("flow_id", healthy.marshalToString(FlowId.builder().withId("healthy").build()));
             ContextTransportEngine engine = new ContextTransportEngine(() -> List.of(codec, healthy));
-            engine.read(caller, carrier, Set.of("map", "flow_id"));
-            assertSame(original, map.slot().require());
+            engine.read(caller, carrier, Set.of("container", "flow_id"));
+            assertSame(original, owner.require());
             assertEquals("healthy", FlowIdContext.require().getId());
             assertEquals(1, failures.size());
             ContextPropagationException failure = assertInstanceOf(ContextPropagationException.class, failures.getFirst());
@@ -93,21 +102,24 @@ class ContextTransportEngineTest {
             assertEquals(ClassCastException.class.getName(), failure.getFailureType());
             assertNull(failure.getCause());
             assertFalse(failure.toString().contains("private-decoded-data"));
-            ContextMapItem<String, Integer> valid = map.item(Map.of("recovered", 2));
+            ContextChainDataItem valid = container.equals("map") ? map.item(Map.of("recovered", 2))
+                : set.item(Set.of("recovered"));
             decoded.set(valid);
-            engine.read(caller, carrier, Set.of("map", "flow_id"));
-            assertSame(valid, map.slot().require());
+            engine.read(caller, carrier, Set.of("container", "flow_id"));
+            assertSame(valid, owner.require());
             assertEquals(1, failures.size());
-            carrier.set("map", codec.marshalRemovalToString());
-            engine.read(caller, carrier, Set.of("map", "flow_id"));
-            assertTrue(DefaultStorage.isRemoved(DefaultStorage.getEntry(caller, "map")));
+            carrier.set("container", codec.marshalRemovalToString());
+            engine.read(caller, carrier, Set.of("container", "flow_id"));
+            assertTrue(DefaultStorage.isRemoved(DefaultStorage.getEntry(caller, "container")));
             test.completeNow();
         }));
     }
 
-    private static Stream<Arguments> mapImportConflicts() {
-        return Stream.of("key", "value", "item").flatMap(conflict -> Stream.of(false, true)
-            .flatMap(populated -> Stream.of(false, true).map(observer -> Arguments.of(conflict, populated, observer))));
+    private static Stream<Arguments> containerImportConflicts() {
+        return Stream.of("map", "set").flatMap(container ->
+            (container.equals("map") ? Stream.of("key", "value", "item", "set") : Stream.of("value", "item", "map"))
+                .flatMap(conflict -> Stream.of(false, true).flatMap(populated -> Stream.of(false, true)
+                    .map(observer -> Arguments.of(container, conflict, populated, observer)))));
     }
 
     @ParameterizedTest

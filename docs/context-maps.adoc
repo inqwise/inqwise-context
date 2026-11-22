@@ -4,6 +4,8 @@
 
 `ContextMap<K,V>` is a reusable handle resolving the active Vert.x context, not a mutable implementation of `java.util.Map`. Each stored value is a `ContextMapItem<K,V>` containing an immutable snapshot and its declared key/value types. The container implements `ContextChainDataItem`; its elements need not implement that marker.
 
+For unique membership rather than key/value entries, see link:context-sets.adoc[typed context sets].
+
 == Declare Once
 
 [source,java]
@@ -142,5 +144,5 @@ Forked core-only applications register real external codec and factory providers
 
 [source,shell]
 ----
-mvn -Dtest=ContextMapTest,ContextMapIntegrationTest,ContextItemFactoriesTest test
+mvn -Dtest=ContextMapTest,ContextCollectionsIntegrationTest,ContextItemFactoriesTest test
 ----

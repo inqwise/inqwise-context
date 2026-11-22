@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -113,6 +114,36 @@ class ContextItemFactoriesTest {
                 assertThrows(IllegalStateException.class, () -> resolve(loader, conflictSlot, null));
             }
             assertEquals(1, ((AtomicInteger) loader.loadClass(MapFactory.class.getName()).getField("created").get(null)).get());
+        }
+    }
+
+    @Test
+    void factory_setElementType_matchesIndependentlyOfErasedItemClass() throws Exception {
+        try (URLClassLoader loader = isolated(SetFactory.class.getName())) {
+            Class<?> sets = loader.loadClass(ContextSets.class.getName());
+            Object matching = sets.getMethod("define", String.class, Class.class)
+                .invoke(null, "factory-set", String.class);
+            Object slot = matching.getClass().getMethod("slot").invoke(matching);
+            Object item = resolve(loader, slot, null).get();
+            assertEquals(Set.of("configured"), item.getClass().getMethod("snapshot").invoke(item));
+            Object conflict = sets.getMethod("define", String.class, Class.class)
+                .invoke(null, "factory-set", Long.class);
+            Object conflictSlot = conflict.getClass().getMethod("slot").invoke(conflict);
+            assertThrows(IllegalStateException.class, () -> resolve(loader, conflictSlot, null));
+            assertEquals(1, ((AtomicInteger) loader.loadClass(SetFactory.class.getName()).getField("created").get(null)).get());
+        }
+    }
+
+    @Test
+    void factory_erasedSetSlot_cannotMatchASetOfSetItems() throws Exception {
+        try (URLClassLoader loader = isolated(ErasedSetFactory.class.getName())) {
+            Class<?> sets = loader.loadClass(ContextSets.class.getName());
+            Class<?> itemType = loader.loadClass(ContextSetItem.class.getName());
+            Object set = sets.getMethod("define", String.class, Class.class)
+                .invoke(null, "factory-set", itemType);
+            Object slot = set.getClass().getMethod("slot").invoke(set);
+            assertThrows(IllegalStateException.class, () -> resolve(loader, slot, null));
+            assertEquals(0, ((AtomicInteger) loader.loadClass(ErasedSetFactory.class.getName()).getField("created").get(null)).get());
         }
     }
 
@@ -223,6 +254,38 @@ class ContextItemFactoriesTest {
         public ContextMapItem<String, Integer> create() {
             created.incrementAndGet();
             return MAP.item(Map.of("configured", 42));
+        }
+    }
+
+    public static final class SetFactory implements ContextItemFactory<ContextSetItem<String>> {
+        public static final AtomicInteger created = new AtomicInteger();
+        private static final ContextSet<String> SET = ContextSets.define("factory-set", String.class);
+
+        @Override
+        public ContextSlot<ContextSetItem<String>> slot() {
+            return SET.slot();
+        }
+
+        @Override
+        public ContextSetItem<String> create() {
+            created.incrementAndGet();
+            return SET.item(Set.of("configured"));
+        }
+    }
+
+    @SuppressWarnings("rawtypes")
+    public static final class ErasedSetFactory implements ContextItemFactory<ContextSetItem> {
+        public static final AtomicInteger created = new AtomicInteger();
+
+        @Override
+        public ContextSlot<ContextSetItem> slot() {
+            return ContextSlots.define("factory-set", ContextSetItem.class);
+        }
+
+        @Override
+        public ContextSetItem create() {
+            created.incrementAndGet();
+            return ContextSets.define("factory-set", String.class).item(Set.of());
         }
     }
 }
