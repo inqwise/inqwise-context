@@ -8,6 +8,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 
 import com.inqwise.context.spi.ContextChainDataItem;
 
@@ -104,6 +105,24 @@ final class DefaultStorage {
             return Removed.INSTANCE;
         });
         return previous.get();
+    }
+
+    static <T extends ContextChainDataItem> T update(ContextInternal context, String key,
+            Class<T> type, UnaryOperator<T> updater) {
+        Objects.requireNonNull(key);
+        Objects.requireNonNull(type);
+        Objects.requireNonNull(updater);
+        return type.cast(contextualDataMap(context).compute(key, (ignored, previous) -> {
+            if (previous == null || isRemoved(previous)) {
+                throw new IllegalStateException("Cannot update an absent or removed context item");
+            }
+            return type.cast(Objects.requireNonNull(updater.apply(type.cast(previous)),
+                "Context item updater returned null"));
+        }));
+    }
+
+    static <T extends ContextChainDataItem> T update(String key, Class<T> type, UnaryOperator<T> updater) {
+        return update(currentContext(), key, type, updater);
     }
 
     static boolean isRemoved(ContextChainDataItem value) {

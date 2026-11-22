@@ -10,11 +10,12 @@ import io.vertx.core.json.JsonObject;
 import com.google.common.base.MoreObjects;
 
 /**
- * Identifies a flow with an optional identifier and timestamp. JSON transport
- * uses epoch milliseconds for the timestamp and omits null fields.
+ * Immutable flow identity with an optional identifier and timestamp. JSON
+ * transport uses epoch milliseconds for the timestamp and omits null fields.
+ * Context updates replace the entire value; no fields are patched or merged.
  */
 @DataObject
-public class FlowId implements ContextChainDataItem {
+public final class FlowId implements ContextChainDataItem {
     /**
      * Field names used in the JSON representation.
      */

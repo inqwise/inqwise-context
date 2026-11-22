@@ -1,5 +1,6 @@
 package com.inqwise.context;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -19,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
@@ -32,6 +34,86 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @ExtendWith(VertxExtension.class)
 @Timeout(15)
 class FlowIdContextTest {
+    @Test
+    void slotUpdate_replacementOmitsTimestamp_doesNotMergeFieldsOrMutateOriginal(Vertx vertx, VertxTestContext test) {
+        vertx.runOnContext(ignored -> test.verify(() -> {
+            Instant timestamp = Instant.ofEpochMilli(123L);
+            FlowId original = FlowId.builder().withId("original").withTimestamp(timestamp).build();
+            FlowId replacement = FlowId.builder().withId("replacement").build();
+            FlowIdContext.put(original);
+            assertSame(replacement, FlowIdContext.slot().update(current -> {
+                assertSame(original, current);
+                return replacement;
+            }));
+            assertSame(replacement, FlowIdContext.require());
+            assertNull(FlowIdContext.require().getTimestamp());
+            assertEquals("original", original.getId());
+            assertEquals(timestamp, original.getTimestamp());
+            test.completeNow();
+        }));
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = ThreadingModel.class, names = {"EVENT_LOOP", "WORKER", "VIRTUAL_THREAD"})
+    void update_deployedCallAndReply_propagatesReplacementsUnderExistingPolicies(
+            ThreadingModel model, Vertx vertx, VertxTestContext test) {
+        vertx.exceptionHandler(test::failNow);
+        EventBusTransportHandler external = new EventBusTransportHandler(() -> List.of(new TenantContext.Codec()));
+        vertx.eventBus().addInboundInterceptor(external::handleInbound);
+        vertx.eventBus().addOutboundInterceptor(external::handleOutbound);
+        FlowId original = FlowId.builder().withId("original").build();
+        FlowId outgoing = FlowId.builder().withId("updated").build();
+        DeploymentOptions options = new DeploymentOptions().setThreadingModel(model);
+        vertx.deployVerticle(new VerticleBase() {
+            @Override
+            public Future<?> start() {
+                return vertx.eventBus().<String>consumer("atomic-update", message -> test.verify(() -> {
+                    assertEquals("updated", FlowIdContext.require().getId());
+                    assertNotSame(outgoing, FlowIdContext.require());
+                    assertEquals("tenant-updated", TenantContext.VALUE.require().id());
+                    FlowId remote = FlowIdContext.slot().update(current -> FlowId.builder()
+                        .withId(current.getId() + "-remote").build());
+                    TenantContext.Tenant tenant = TenantContext.VALUE.update(current ->
+                        new TenantContext.Tenant(current.id() + "-remote"));
+                    ContextInternal receiver = ContextInternal.current();
+                    assertEquals(model, receiver.threadingModel());
+                    vertx.timer(1).onComplete(test.succeeding(tick -> test.verify(() -> {
+                        assertSame(receiver, ContextInternal.current());
+                        assertSame(remote, FlowIdContext.require());
+                        assertSame(tenant, TenantContext.VALUE.require());
+                        message.reply("delivered");
+                    })));
+                })).completion();
+            }
+        }, options).compose(deployment -> vertx.deployVerticle(new VerticleBase() {
+            @Override
+            public Future<?> start() {
+                ContextInternal caller = ContextInternal.current();
+                FlowIdContext.put(original);
+                assertSame(outgoing, FlowIdContext.slot().update(current -> {
+                    assertSame(original, current);
+                    return outgoing;
+                }));
+                TenantContext.VALUE.put(new TenantContext.Tenant("tenant"));
+                TenantContext.VALUE.update(current -> new TenantContext.Tenant(current.id() + "-updated"));
+                return vertx.timer(1).compose(tick ->
+                    vertx.eventBus().<String>request("atomic-update", "payload")).compose(reply -> {
+                        assertEquals("delivered", reply.body());
+                        assertSame(caller, ContextInternal.current());
+                        assertSame(outgoing, FlowIdContext.require());
+                        assertEquals("tenant-updated-remote", TenantContext.VALUE.require().id());
+                        return vertx.timer(1);
+                    }).map(tick -> {
+                        assertSame(caller, ContextInternal.current());
+                        assertSame(outgoing, FlowIdContext.require());
+                        assertEquals("tenant-updated-remote", TenantContext.VALUE.require().id());
+                        assertEquals("original", original.getId());
+                        return tick;
+                    });
+            }
+        }, options)).onComplete(test.succeedingThenComplete());
+    }
+
     @Test
     void defaultFactory_freshScopes_haveIndependentIdsAndMillisecondTimestamps(Vertx vertx, VertxTestContext test) {
         List<FlowId> created = new CopyOnWriteArrayList<>();

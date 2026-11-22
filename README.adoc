@@ -63,6 +63,30 @@ TenantContext.Tenant tenant = TenantContext.VALUE.require();
 
 Declare the key and type once. Typed operations validate values against that type; replacement also checks the existing value atomically, rejecting incompatible data without overwriting it. The item's codec implements `ContextChainDataService` and returns `TenantContext.VALUE.key()` from `key()`; its encoder can validate/cast with `TenantContext.VALUE.type().cast(item)`. Slot declaration does not register a codec or enable propagation. A third argument to `ContextSlots.define` supplies an optional default factory; types requiring application input can omit it. Factories construct values, while aggregate constructors enforce required fields. A concurrent map does not make mutable item internals or read/modify/write sequences atomic.
 
+=== Ownership and Atomic Replacement
+
+Storage retains exact object references without copying. Prefer immutable items; independently thread-safe mutable items remain the application's responsibility, including consistent encoding by codecs. A slot resolves the current execution context, not a thread-owned value. Neither storage nor transport provides locks around mutable fields.
+
+Use `update` to transform one existing immutable item atomically instead of a separate read/modify/write sequence:
+
+[source,java]
+----
+TenantContext.Tenant replacement = TenantContext.VALUE.update(current ->
+    new TenantContext.Tenant(current.id() + "-verified"));
+
+FlowIdContext.put(FlowId.builder().withId("replacement-flow").build());
+----
+
+The updater runs once for an existing correctly typed value and returns the exact stored replacement; returning the original instance is allowed. It must be short, synchronous, and must not modify context storage or initialize other slots. An absent or removed item fails without invoking the updater or a factory. A null result is invalid: use `remove()` for explicit deletion, and `put()` for intentional reintroduction.
+
+`FlowId` is final and immutable. `FlowIdContext.put(...)` replaces the entire instance, not individual fields. Omitted fields remain absent in the replacement; storage does not merge them from the old value. Use `FlowId.builderFrom(current)` when constructing a replacement that intentionally retains existing fields. The FlowId facade has no dedicated `update` method; callers that need atomic derivation can explicitly use the generic `FlowIdContext.slot().update(...)` operation, which also replaces the complete value.
+
+An exception or invalid result retains the previous reference, but cannot undo in-place mutations performed by application code. Construct a replacement rather than modifying the input. Atomicity covers one slot only; combine values into one immutable item if they must change together. There are no cross-slot or distributed transactions.
+
+Updates affect subsequent outgoing calls and replies, not already-sent messages or remote instances. Inbound values and removals still follow the codec's replacement policy; an atomic local update does not change FlowId's caller-preservation policy. Initial creation remains explicit through `getOrCreate()`.
+
+=== Factory Providers
+
 For an environment-specific FlowId factory:
 
 [source,java]
