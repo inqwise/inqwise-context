@@ -145,6 +145,8 @@ Forked core-only applications register real external codec and factory providers
 
 Separate loopback HTTP/1.1 tests use real WebClient/server exchanges for all three containers, with coordinated in-flight caller edits, returned replacement/removal, absent metadata, private storage isolation, and timers. See link:reference.adoc#_collection_transport_coverage[collection transport coverage] for the matrix and its limits; this does not add live Kafka-broker or clustered-map-specific validation.
 
+Kafka-only tests use the native mock producer to verify send-time snapshots, map edits/removals forwarded across two scoped consumers, and preservation of the producer's newer map through acknowledgments. No live broker is required or tested.
+
 [source,shell]
 ----
 mvn -Dtest=ContextMapTest,ContextCollectionsIntegrationTest,ContextItemFactoriesTest test

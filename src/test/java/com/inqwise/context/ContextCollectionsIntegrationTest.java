@@ -37,6 +37,15 @@ class ContextCollectionsIntegrationTest {
             "CONTEXT_COLLECTIONS_HTTP_OK");
     }
 
+    @ParameterizedTest
+    @EnumSource(CodecProfile.class)
+    void collections_kafkaForwarding_keepsProducerStateAndIsolatesConsumerChanges(CodecProfile profile) throws Exception {
+        registerProviders();
+        TransportClasspathTestSupport.runNode(ContextCollectionsKafkaNode.class, profile, directory,
+            List.of("vertx-kafka-client-", "kafka-clients-", "lz4-java-", "snappy-java-", "zstd-jni-", "slf4j-api-"),
+            "CONTEXT_COLLECTIONS_KAFKA_OK");
+    }
+
     private void registerProviders() throws Exception {
         Path services = directory.resolve("runtime/META-INF/services");
         Files.createDirectories(services);

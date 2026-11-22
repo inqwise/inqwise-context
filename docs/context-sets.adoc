@@ -129,6 +129,8 @@ The shared collection forked fixture discovers actual external codecs and factor
 
 Separate loopback HTTP/1.1 tests exercise real WebClient/server exchanges, including membership changes while a request is pending and returned whole-set replacement/removal. They distinguish absent metadata from empty sets and removal markers without implicit factory calls. See link:reference.adoc#_collection_transport_coverage[collection transport coverage] for the matrix and limits; live Kafka brokers and clustered-set-specific behavior remain outside these tests.
 
+Kafka-only tests use the native mock producer to verify send-time membership snapshots and edited sets/removals forwarded across two isolated consumer scopes. Consumer changes never return through producer acknowledgments; this is adapter coverage without a live broker.
+
 [source,shell]
 ----
 mvn -Dtest=ContextSetTest,ContextCollectionsIntegrationTest,ContextItemFactoriesTest test

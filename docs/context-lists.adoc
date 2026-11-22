@@ -134,6 +134,8 @@ The shared map/set/list forked fixture discovers real external codecs and factor
 
 Separate loopback HTTP/1.1 tests use real WebClient/server exchanges and verify sequence/duplicate retention, in-flight caller edits, returned whole-list replacement/removal, absent metadata, private storage isolation, and timer identity. See link:reference.adoc#_collection_transport_coverage[collection transport coverage] for the matrix and limits; these are not live Kafka-broker or clustered-list-specific tests.
 
+Kafka-only tests use the native mock producer to verify send-time list snapshots, positional edits and duplicates, and whole-list removals forwarded across two consumer scopes. Producer acknowledgments retain the producer's newer list rather than importing consumer changes. No live broker is exercised.
+
 [source,shell]
 ----
 mvn -Dtest=ContextListTest,ContextCollectionsIntegrationTest,ContextItemFactoriesTest test
