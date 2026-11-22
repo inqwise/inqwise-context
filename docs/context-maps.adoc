@@ -1,0 +1,144 @@
+= Typed Context Maps
+:toc:
+:toclevels: 2
+
+`ContextMap<K,V>` is a reusable handle resolving the active Vert.x context, not a mutable implementation of `java.util.Map`. Each stored value is a `ContextMapItem<K,V>` containing an immutable snapshot and its declared key/value types. The container implements `ContextChainDataItem`; its elements need not implement that marker.
+
+== Declare Once
+
+[source,java]
+----
+public record Attribute(String text) {}
+
+static final ContextMap<String, Attribute> ATTRIBUTES =
+    ContextMaps.define("attributes", String.class, Attribute.class);
+----
+
+`"attributes"` is the storage and wire key. Entry keys such as `"region"` are ordinary map keys. Type tokens appear only in the declaration; application operations do not guess types or cast values. Handles contain no captured flow or mutable map and can be shared.
+
+Key/value classes must be reference types. Declaration matching is exact, not inferred from current entries: empty `Map<String,Integer>` and `Map<String,Long>` items conflict under the same storage key. Raw writes and factory results are checked too. `slot().type()` is the erased wrapper class, not a complete generic-type descriptor; codec authors use the bound handle's `cast(item)` instead.
+
+Type information belongs to the stored item, not a global declaration registry. An absent item does not reserve its key forever; explicit replacement after whole-item removal creates a new item. Use a stable, unique wire key for each application schema. Class tokens do not describe nested generic arguments; use an application-owned immutable element class when nested structure needs stronger validation than an erased `List.class` or `Map.class` token.
+
+== Initialize And Use Entries
+
+[source,java]
+----
+ATTRIBUTES.getOrCreate(); // explicit initialization; empty unless an SPI factory overrides it
+ATTRIBUTES.put("region", new Attribute("eu"));
+ATTRIBUTES.putIfAbsent("owner", new Attribute("service-a"));
+
+Attribute region = ATTRIBUTES.get("region");
+Attribute removed = ATTRIBUTES.remove("region");
+Map<String, Attribute> snapshot = ATTRIBUTES.snapshot();
+----
+
+All context operations require an active Vert.x context, normally a deployed lifecycle callback or handler. Defining a handle, building an item, and validating a codec input do not require one.
+
+[cols="1,2",options="header"]
+|===
+|Operation |Contract
+|`getOrCreate()` |Retain an existing item, or initialize through SPI with an empty-map fallback. Never revive a removal marker.
+|`getOrCreate(factory)` |Initialize from a complete map only when absent, bypassing SPI. Input is copied.
+|`get(key)` |Read from an initialized map; return null for a missing entry.
+|`put(key, value)` |Atomically add/replace an entry; return its previous value or null.
+|`putIfAbsent(key, value)` |Atomically insert only when missing; return the previous value or null if inserted.
+|`remove(key)` |Atomically remove one entry; return its previous value or null.
+|`putAll(values)` |Atomically merge a validated batch; an invalid entry cannot partially apply it.
+|`clear()` |Atomically retain a present, empty map.
+|`snapshot()` |Return the current immutable snapshot, not a live mutable view.
+|`replace(values)` |Explicitly replace the entire map, initializing or reintroducing it. Entries not supplied are removed.
+|`remove()` |Remove the whole context item and retain its transportable marker; return the previous snapshot or null.
+|`update(function)` |Atomically transform an existing read-only snapshot into complete replacement contents.
+|===
+
+Entry operations, `snapshot`, `clear`, and `update` reject absent or removed containers rather than silently creating them. Null keys and values are forbidden, so `get` returning null unambiguously means a missing entry in a present map. Only explicit initialization creates an absent container; only explicit `replace` reintroduces one after removal.
+
+== Snapshot Ownership And Atomicity
+
+[source,java]
+----
+Map<String, Attribute> before = ATTRIBUTES.snapshot();
+ATTRIBUTES.putAll(Map.of("region", new Attribute("us"), "owner", new Attribute("service-b")));
+// before still contains the previous entries and references
+
+Map<String, Attribute> changed = ATTRIBUTES.update(current -> {
+    Map<String, Attribute> copy = new LinkedHashMap<>(current);
+    copy.remove("owner");
+    copy.put("region", new Attribute("apac"));
+    return copy;
+});
+----
+
+Every mutation publishes one complete immutable replacement. Snapshots preserve input encounter order and expose no mutable backing map or mutable entry views. Supplied maps are copied and must not be modified concurrently during that copy. Returned update maps are copied too, so later mutation of the callback's result does not alter stored membership.
+
+Copies are shallow: keys and values remain the exact supplied objects. They must be immutable or independently thread-safe; keys must retain stable equality and hash codes. A map of mutable values does not gain deep immutability, and a failed updater cannot undo mutations to those objects. Capture one snapshot when reading related entries consistently.
+
+An updater receives a read-only map, runs synchronously once for an existing correctly typed item, and must return non-null contents. Keep callbacks short; do not modify context storage, initialize other slots, or perform asynchronous I/O inside them. Exceptions or invalid results retain the previous stored reference. Copying costs scale with map size: these containers target small flow metadata, not general-purpose shared caches.
+
+Atomicity covers one item in one execution context. A batch is atomic; several separate `put` calls are not a transaction. There is no cross-slot or distributed atomicity.
+
+== Empty Map Versus Removal
+
+[source,java]
+----
+ATTRIBUTES.clear(); // present item with zero entries
+Map<String, Attribute> empty = ATTRIBUTES.snapshot();
+
+ATTRIBUTES.remove(); // whole-item removal, not clear()
+// entry mutations and getOrCreate now fail
+
+ATTRIBUTES.replace(Map.of("owner", new Attribute("restored"))); // explicit reintroduction
+----
+
+Removing the last entry, or calling `clear`, does not create a removal marker. Empty maps remain typed values that can be encoded and returned. Whole-item removal follows the same inbound replacement policy as a value and requires a codec that supports removal encoding.
+
+== Codec And Factory SPI
+
+Declaring a map does not register its codec or change the built-in FlowId-only HTTP/Kafka configuration. Each application codec defines its key/value encoding, schema version, size limits, and return policy. No type guessing, automatic key-to-string conversion, or Java object deserialization is supplied.
+
+The complete public-API example is link:../src/test/java/com/inqwise/context/extension/StringMapContext.java[StringMapContext], which declares a `ContextMap<String,String>` plus stateless codec and initialization providers. These example providers are test fixtures, not shipped registrations or a universal map wire format.
+
+The essential codec operations are:
+
+[source,java]
+----
+String key = VALUES.slot().key();
+Map<String, String> outgoing = VALUES.cast(item).snapshot();
+ContextMapItem<String, String> decoded = VALUES.item(decodedValues);
+----
+
+`cast` checks both parameter types, even for empty input. `item` validates and copies decoded entries, retaining the declared types without putting class names in untrusted headers. Decoders must call it with their known schema rather than allowing network data to select arbitrary Java classes. Elements are serialized together as one snapshot; they do not need individual storage registrations.
+
+Register a codec through `META-INF/services/com.inqwise.context.spi.ContextChainDataService`, using its actual provider class name. EventBus automatically discovers it. For HTTP or Kafka, also include its slot in the adapter configuration:
+
+[source,java]
+----
+ContextTransportConfiguration configuration = ContextTransportConfiguration.builder()
+    .include(FlowIdContext.slot())
+    .include(ATTRIBUTES.slot())
+    .build();
+----
+
+Pass that configuration and the destination allowlist to the protocol adapter as documented in the link:reference.adoc#_transport_configuration[transport reference]. The FlowId writer-profile setting does not choose the map codec's format. HTTP and Kafka use different carrier envelopes; do not copy their managed headers verbatim between protocols.
+
+For custom initialization, implement `ContextItemFactory<ContextMapItem<K,V>>`: `slot()` returns the bound map declaration's slot and `create()` returns `MAP.item(initialValues)`. Register the provider in `META-INF/services/com.inqwise.context.spi.ContextItemFactory`. It overrides the empty fallback only for explicit `getOrCreate()`. Reads, imports, updates, existing values, and removal markers never invoke it; `getOrCreate(factory)` bypasses SPI. Providers and service registrations must be visible to the library's defining classloader, as with ordinary item providers. Mismatched key/value declarations are rejected before provider creation of a value.
+
+== Propagation Semantics
+
+Subsequent sends encode the current complete snapshot or whole-item removal marker. Already-exported metadata does not change when the local map changes. Receivers obtain new item and snapshot instances, not shared Java maps.
+
+Inbound values and removals follow the codec's `replaceExistingOnInbound()` policy. The default accepts a complete returned map, even if the caller changed entries while the call was pending; it is not an entry merge or distributed conflict-resolution algorithm. A caller-preserving codec returns `false` instead. Kafka acknowledgments do not return consumer changes. The independent FlowId slot retains its own caller-preservation policy.
+
+Treat received map contents as untrusted. Whole-item schema validation, application authentication/authorization, and adapter destination policies remain separate responsibilities.
+
+== Validation
+
+Unit tests cover immutable input copies and collection views, exact generic declarations including empty maps, raw misuse, atomic batches and failures, explicit lifecycle rules, 256 concurrent entry additions, and event-loop/worker/virtual-thread deployment.
+
+Forked core-only applications register real external codec and factory providers. They verify EventBus call/reply, values versus empty snapshots versus removals, explicit reintroduction, timer identity, cached factory discovery, and preservation of the separate FlowId in all three deployment modes and all FlowId writer profiles. Additional direct HTTP-carrier checks validate envelope export/import and send-time snapshots without requiring WebClient. This is not live HTTP/Kafka or clustered-map-specific coverage; existing adapter tests remain separately documented.
+
+[source,shell]
+----
+mvn -Dtest=ContextMapTest,ContextMapIntegrationTest,ContextItemFactoriesTest test
+----

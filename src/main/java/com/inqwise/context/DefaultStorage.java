@@ -7,6 +7,7 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 
@@ -44,12 +45,16 @@ final class DefaultStorage {
     }
 
     static <T extends ContextChainDataItem> void put(String key, T value, Class<T> type) {
+        put(key, value, Objects.requireNonNull(type)::cast);
+    }
+
+    static <T extends ContextChainDataItem> void put(String key, T value,
+            Function<ContextChainDataItem, T> checkedCast) {
         Objects.requireNonNull(key);
         Objects.requireNonNull(value);
-        Objects.requireNonNull(type);
         contextualDataMap(currentContext()).compute(key, (ignored, previous) -> {
             if (!isRemoved(previous)) {
-                type.cast(previous);
+                checkedCast.apply(previous);
             }
             return value;
         });
@@ -99,9 +104,13 @@ final class DefaultStorage {
     }
 
     static <T extends ContextChainDataItem> T remove(String key, Class<T> type) {
+        return remove(key, Objects.requireNonNull(type)::cast);
+    }
+
+    static <T extends ContextChainDataItem> T remove(String key, Function<ContextChainDataItem, T> checkedCast) {
         AtomicReference<T> previous = new AtomicReference<>();
         contextualDataMap(currentContext()).compute(key, (ignored, value) -> {
-            previous.set(isRemoved(value) ? null : type.cast(value));
+            previous.set(isRemoved(value) ? null : checkedCast.apply(value));
             return Removed.INSTANCE;
         });
         return previous.get();
@@ -109,20 +118,30 @@ final class DefaultStorage {
 
     static <T extends ContextChainDataItem> T update(ContextInternal context, String key,
             Class<T> type, UnaryOperator<T> updater) {
+        return update(context, key, Objects.requireNonNull(type)::cast, updater);
+    }
+
+    static <T extends ContextChainDataItem> T update(ContextInternal context, String key,
+            Function<ContextChainDataItem, T> checkedCast, UnaryOperator<T> updater) {
         Objects.requireNonNull(key);
-        Objects.requireNonNull(type);
+        Objects.requireNonNull(checkedCast);
         Objects.requireNonNull(updater);
-        return type.cast(contextualDataMap(context).compute(key, (ignored, previous) -> {
+        return checkedCast.apply(contextualDataMap(context).compute(key, (ignored, previous) -> {
             if (previous == null || isRemoved(previous)) {
                 throw new IllegalStateException("Cannot update an absent or removed context item");
             }
-            return type.cast(Objects.requireNonNull(updater.apply(type.cast(previous)),
+            return checkedCast.apply(Objects.requireNonNull(updater.apply(checkedCast.apply(previous)),
                 "Context item updater returned null"));
         }));
     }
 
     static <T extends ContextChainDataItem> T update(String key, Class<T> type, UnaryOperator<T> updater) {
         return update(currentContext(), key, type, updater);
+    }
+
+    static <T extends ContextChainDataItem> T update(String key, Function<ContextChainDataItem, T> checkedCast,
+            UnaryOperator<T> updater) {
+        return update(currentContext(), key, checkedCast, updater);
     }
 
     static boolean isRemoved(ContextChainDataItem value) {

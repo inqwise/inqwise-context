@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -92,6 +93,26 @@ class ContextItemFactoriesTest {
         try (URLClassLoader loader = isolated(WrongType.class.getName())) {
             assertThrows(IllegalStateException.class, () -> resolve(loader, flowSlot(loader), null));
             assertEquals(0, ((AtomicInteger) loader.loadClass(WrongType.class.getName()).getField("created").get(null)).get());
+        }
+    }
+
+    @Test
+    void factory_mapParameters_matchIndependentlyOfErasedItemClass() throws Exception {
+        try (URLClassLoader loader = isolated(MapFactory.class.getName())) {
+            Class<?> maps = loader.loadClass(ContextMaps.class.getName());
+            Object matching = maps.getMethod("define", String.class, Class.class, Class.class)
+                .invoke(null, "factory-map", String.class, Integer.class);
+            Object slot = matching.getClass().getMethod("slot").invoke(matching);
+            Object item = resolve(loader, slot, null).get();
+            assertEquals(Map.of("configured", 42), item.getClass().getMethod("snapshot").invoke(item));
+            for (Class<?>[] parameters : List.of(new Class<?>[] {Long.class, Integer.class},
+                    new Class<?>[] {String.class, Long.class})) {
+                Object conflict = maps.getMethod("define", String.class, Class.class, Class.class)
+                    .invoke(null, "factory-map", parameters[0], parameters[1]);
+                Object conflictSlot = conflict.getClass().getMethod("slot").invoke(conflict);
+                assertThrows(IllegalStateException.class, () -> resolve(loader, conflictSlot, null));
+            }
+            assertEquals(1, ((AtomicInteger) loader.loadClass(MapFactory.class.getName()).getField("created").get(null)).get());
         }
     }
 
@@ -186,6 +207,22 @@ class ContextItemFactoriesTest {
         public TenantContext.Tenant create() {
             created.incrementAndGet();
             return new TenantContext.Tenant("wrong");
+        }
+    }
+
+    public static final class MapFactory implements ContextItemFactory<ContextMapItem<String, Integer>> {
+        public static final AtomicInteger created = new AtomicInteger();
+        private static final ContextMap<String, Integer> MAP = ContextMaps.define("factory-map", String.class, Integer.class);
+
+        @Override
+        public ContextSlot<ContextMapItem<String, Integer>> slot() {
+            return MAP.slot();
+        }
+
+        @Override
+        public ContextMapItem<String, Integer> create() {
+            created.incrementAndGet();
+            return MAP.item(Map.of("configured", 42));
         }
     }
 }

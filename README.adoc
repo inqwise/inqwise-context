@@ -212,6 +212,7 @@ TenantContext.Tenant replacement = TenantContext.VALUE.update(previous ->
 Prefer immutable items: storage does not synchronize mutable fields or provide cross-slot or distributed transactions.
 Register a `ContextChainDataService` for wire propagation; factory SPI providers are optional and only participate in explicit creation.
 See link:docs/reference.adoc#_typed_context_items[typed items, ownership, and factories].
+For standard key/value metadata, use link:docs/context-maps.adoc[typed context maps] with immutable snapshots and atomic entry operations.
 
 === Bind External Callbacks
 
@@ -231,6 +232,7 @@ See link:docs/reference.adoc#_client_context_compatibility[client and timer comp
 
 == Reference
 
+* link:docs/context-maps.adoc[Typed maps, atomic entry operations, lifecycle, and SPI integration]
 * link:docs/reference.adoc#_typed_context_items[Typed items, ownership, atomic replacement, and factory SPI]
 * link:docs/reference.adoc#_transport_configuration[Transport configuration and custom carriers]
 * link:docs/reference.adoc#_http_transport[HTTP installation, HTTP/3, routing policies, and failure behavior]
