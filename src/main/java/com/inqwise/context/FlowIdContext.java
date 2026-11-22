@@ -3,6 +3,7 @@ package com.inqwise.context;
 import java.time.Instant;
 import java.util.UUID;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 
 import com.inqwise.context.data.FlowId;
 
@@ -50,6 +51,19 @@ public final class FlowIdContext {
      */
     public static void put(FlowId value) {
         SLOT.put(value);
+    }
+
+    /**
+     * Atomically replaces an existing identity using a synchronous transformation.
+     * The updater must not modify context storage. See {@link ContextSlot#update}
+     * for ownership and atomicity requirements.
+     * @param updater the transformation of the existing identity
+     * @return the exact stored replacement
+     * @throws NullPointerException if updater or its result is null
+     * @throws IllegalStateException if absent, removed, or outside a context
+     */
+    public static FlowId update(UnaryOperator<FlowId> updater) {
+        return SLOT.update(updater);
     }
 
     /**

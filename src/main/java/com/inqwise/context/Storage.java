@@ -5,7 +5,9 @@ import com.inqwise.context.spi.ContextChainDataItem;
 /**
  * Internal string-keyed access used by transport fixtures and implementation.
  */
-interface Storage {
+final class Storage {
+    private Storage() {
+    }
     /**
      * Stores or replaces a value in the current Vert.x context.
      *
@@ -14,9 +16,9 @@ interface Storage {
      * @throws NullPointerException if the key or value is null
      * @throws IllegalStateException if called outside a Vert.x context
      */
-	static void put(String key, ContextChainDataItem value) {
-	    DefaultStorage.put(key, value);
-	  }
+    static void put(String key, ContextChainDataItem value) {
+        DefaultStorage.put(key, value);
+    }
 
     /**
      * Looks up metadata in the current context.
@@ -26,9 +28,9 @@ interface Storage {
      * @throws NullPointerException if the key is null
      * @throws IllegalStateException if called outside a Vert.x context
      */
-	  static ContextChainDataItem get(String key) {
-	    return DefaultStorage.get(key);
-	  }
+    static ContextChainDataItem get(String key) {
+        return DefaultStorage.get(key);
+    }
 
     /**
      * Removes a value from the current context. Supporting providers, including

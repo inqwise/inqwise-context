@@ -2,12 +2,15 @@ package com.inqwise.context;
 
 import java.util.Objects;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 
 import com.inqwise.context.spi.ContextChainDataItem;
 
 /**
  * Immutable typed handle to one context item, not a captured context or stored
  * value. Slot declarations may be shared; operations resolve the active context.
+ * Stored values should be immutable or independently thread-safe: map atomicity
+ * does not protect their fields or a separate read/modify/write sequence.
  *
  * @param <T> the stored item type
  */
@@ -83,6 +86,29 @@ public final class ContextSlot<T extends ContextChainDataItem> {
      */
     public void put(T value) {
         DefaultStorage.put(key, type.cast(Objects.requireNonNull(value, "Context item is mandatory")), type);
+    }
+
+    /**
+     * Atomically transforms one existing item and returns the stored replacement.
+     * No creation factory is invoked. The updater runs once under the slot's
+     * map operation and must be short, synchronous, and must not modify context
+     * storage or initialize other slots. Construct a replacement instead of
+     * mutating the input. A thrown exception, null result, or wrong result type
+     * retains the previous reference, but cannot undo mutations to that object.
+     * Atomicity covers only this slot, not other slots or remote contexts.
+     * Already-sent messages are unaffected; later sends encode the current item.
+     *
+     * @param updater the transformation of the existing value
+     * @return the exact stored replacement, which may be the original instance
+     * @throws NullPointerException if updater or its result is null
+     * @throws IllegalStateException if no context is active or the item is absent
+     *         or explicitly removed
+     * @throws ClassCastException if the existing or replacement value has the
+     *         wrong type
+     */
+    public T update(UnaryOperator<T> updater) {
+        Objects.requireNonNull(updater, "Context item updater is mandatory");
+        return DefaultStorage.update(key, type, updater);
     }
 
     /**
