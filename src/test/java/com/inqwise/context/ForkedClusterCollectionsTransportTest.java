@@ -18,6 +18,7 @@ import com.inqwise.context.data.FlowIdService.CodecProfile;
 import com.inqwise.context.extension.StringListContext;
 import com.inqwise.context.extension.StringMapContext;
 import com.inqwise.context.extension.StringSetContext;
+import com.inqwise.context.proxy.ClusterFlowService;
 import com.inqwise.context.spi.ContextChainDataService;
 import com.inqwise.context.spi.ContextItemFactory;
 import io.vertx.core.DeploymentOptions;
@@ -28,6 +29,7 @@ import io.vertx.core.Vertx;
 import io.vertx.core.eventbus.DeliveryOptions;
 import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.json.JsonObject;
+import io.vertx.serviceproxy.ServiceProxyBuilder;
 import io.vertx.spi.cluster.hazelcast.HazelcastClusterManager;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -148,7 +150,15 @@ class ForkedClusterCollectionsTransportTest {
     @MethodSource("scenarios")
     void eventBus_twoJvms_transportsCollectionSnapshotsAndRemovals(ThreadingModel model, String state, boolean removal)
             throws Exception {
-        String deployment = await(deployScenario(model, state, removal, null, 1));
+        String deployment = await(deployScenario(model, state, removal, null, 1, false));
+        await(sender.undeploy(deployment));
+    }
+
+    @ParameterizedTest
+    @MethodSource("scenarios")
+    void serviceProxy_twoJvms_transportsCollectionSnapshotsAndRemovals(ThreadingModel model, String state, boolean removal)
+            throws Exception {
+        String deployment = await(deployScenario(model, state, removal, null, 1, true));
         await(sender.undeploy(deployment));
     }
 
@@ -156,13 +166,24 @@ class ForkedClusterCollectionsTransportTest {
     @MethodSource("overlapScenarios")
     void eventBus_overlappingRequests_isolateCollectionsAcrossTwoJvms(ThreadingModel model, int repetition)
             throws Exception {
+        runBatch(model, repetition, false);
+    }
+
+    @ParameterizedTest
+    @MethodSource("overlapScenarios")
+    void serviceProxy_overlappingRequests_isolateCollectionsAcrossTwoJvms(ThreadingModel model, int repetition)
+            throws Exception {
+        runBatch(model, repetition, true);
+    }
+
+    private void runBatch(ThreadingModel model, int repetition, boolean proxy) throws Exception {
         String batch = repetition + "-" + UUID.randomUUID();
         List<Future<String>> pending = new ArrayList<>();
         List<String> deployed = new CopyOnWriteArrayList<>();
         try {
             for (String state : List.of("value", "empty", "removed", "absent")) {
                 for (boolean removal : List.of(false, true)) {
-                    pending.add(deployScenario(model, state, removal, batch, 8).andThen(result -> {
+                    pending.add(deployScenario(model, state, removal, batch, 8, proxy).andThen(result -> {
                         if (result.succeeded()) {
                             deployed.add(result.result());
                         }
@@ -176,7 +197,8 @@ class ForkedClusterCollectionsTransportTest {
         }
     }
 
-    private Future<String> deployScenario(ThreadingModel model, String state, boolean removal, String batch, int peers) {
+    private Future<String> deployScenario(ThreadingModel model, String state, boolean removal, String batch, int peers,
+            boolean proxy) {
         return sender.deployVerticle(new VerticleBase() {
             @Override
             public Future<?> start() {
@@ -188,10 +210,20 @@ class ForkedClusterCollectionsTransportTest {
                 ContextCollectionsClusterNode.prepare(state, token);
                 PRIVATE.replace(Map.of("caller", token));
                 var privateItem = PRIVATE.slot().require();
-                var pending = vertx.eventBus().<JsonObject>request(address,
-                    new JsonObject().put("token", token).put("state", state).put("remove", removal)
-                        .put("batch", batch).put("size", peers),
-                    new DeliveryOptions().setSendTimeout(5_000));
+                JsonObject command = new JsonObject().put("token", token).put("state", state).put("remove", removal)
+                    .put("batch", batch).put("size", peers);
+                Future<JsonObject> pending;
+                if (proxy) {
+                    ClusterFlowService service = new ServiceProxyBuilder(vertx).setAddress(address + "-proxy")
+                        .setOptions(new DeliveryOptions().setSendTimeout(5_000)).build(ClusterFlowService.class);
+                    pending = service.process(command.encode()).map(JsonObject::new);
+                } else {
+                    pending = vertx.eventBus().<JsonObject>request(address, command,
+                        new DeliveryOptions().setSendTimeout(5_000)).map(reply -> {
+                            assertNull(reply.headers().get(PRIVATE.slot().key()));
+                            return reply.body();
+                        });
+                }
                 ContextCollectionsClusterNode.replace("pending");
                 var pendingMap = VALUES.slot().require();
                 var pendingSet = LABELS.slot().require();
@@ -203,13 +235,12 @@ class ForkedClusterCollectionsTransportTest {
                 }
                 return pending.compose(reply -> {
                     assertSame(caller, ContextInternal.current());
-                    assertEquals(child.pid(), reply.body().getLong("pid"));
-                    assertEquals(token, reply.body().getString("token"));
-                    assertEquals(peers, reply.body().getInteger("peersSeen"));
+                    assertEquals(child.pid(), reply.getLong("pid"));
+                    assertEquals(token, reply.getString("token"));
+                    assertEquals(peers, reply.getInteger("peersSeen"));
                     assertSame(removal ? null : current, FlowIdContext.get());
                     assertEquals(removal, DefaultStorage.isRemoved(DefaultStorage.getEntry(caller, "flow_id")));
                     assertSame(privateItem, PRIVATE.slot().require());
-                    assertNull(reply.headers().get(PRIVATE.slot().key()));
                     if (removal) {
                         ContextCollectionsClusterNode.assertState("removed", token);
                     } else {

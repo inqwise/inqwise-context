@@ -15,6 +15,7 @@ import com.inqwise.context.data.FlowId;
 import com.inqwise.context.extension.StringListContext;
 import com.inqwise.context.extension.StringMapContext;
 import com.inqwise.context.extension.StringSetContext;
+import com.inqwise.context.proxy.ClusterFlowService;
 import io.vertx.core.DeploymentOptions;
 import io.vertx.core.Future;
 import io.vertx.core.ThreadingModel;
@@ -22,6 +23,7 @@ import io.vertx.core.VerticleBase;
 import io.vertx.core.Vertx;
 import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.json.JsonObject;
+import io.vertx.serviceproxy.ServiceBinder;
 import io.vertx.spi.cluster.hazelcast.HazelcastClusterManager;
 
 import static com.inqwise.context.ClusterTestSupport.await;
@@ -59,65 +61,17 @@ public final class ContextCollectionsClusterNode {
             await(node.deployVerticle(new VerticleBase() {
                 @Override
                 public Future<?> start() {
-                    return vertx.eventBus().<JsonObject>consumer(args[2], message -> {
-                        try {
-                            ContextInternal receiver = ContextInternal.current();
-                            JsonObject command = message.body();
-                            String token = command.getString("token");
-                            assertState(command.getString("state"), token);
-                            check(PRIVATE.slot().get() == null, "Private state leaked into remote request");
-                            FlowId received = FlowIdContext.require();
-                            check(received.getId().equals(token), "Remote FlowId value");
-                            var incomingMap = VALUES.slot().get();
-                            var incomingSet = LABELS.slot().get();
-                            var incomingList = STEPS.slot().get();
-                            PRIVATE.replace(Map.of("remote", token));
-                            var privateItem = PRIVATE.slot().require();
-                            String batchId = command.getString("batch");
-                            Batch batch = batchId == null ? null : batches.computeIfAbsent(batchId,
-                                ignored -> new Batch(command.getInteger("size")));
-                            if (batch != null) {
-                                check(batch.size == command.getInteger("size"), "Inconsistent batch size");
-                                batch.arrived.incrementAndGet();
+                    var direct = vertx.eventBus().<JsonObject>consumer(args[2], message ->
+                        process(vertx, message.body()).onComplete(result -> {
+                            if (result.succeeded()) {
+                                message.reply(result.result());
+                            } else {
+                                message.fail(500, result.cause().toString());
                             }
-                            Future<Void> ready = batch == null ? Future.succeededFuture()
-                                : waitForPeers(vertx, batch, System.nanoTime() + TimeUnit.SECONDS.toNanos(3));
-                            ready.compose(ignored -> vertx.timer(1)).map(tick -> {
-                                check(ContextInternal.current() == receiver && receiver.threadingModel() == ThreadingModel.WORKER,
-                                    "Remote worker timer context");
-                                check(FlowIdContext.get() == received, "Remote timer FlowId identity");
-                                check(VALUES.slot().get() == incomingMap && LABELS.slot().get() == incomingSet
-                                    && STEPS.slot().get() == incomingList, "Remote timer collection identity");
-                                assertState(command.getString("state"), token);
-                                check(PRIVATE.slot().require() == privateItem
-                                    && PRIVATE.snapshot().equals(Map.of("remote", token)), "Remote private storage crossed requests");
-                                if (command.getBoolean("remove")) {
-                                    remove();
-                                } else {
-                                    replace("returned-" + token);
-                                    VALUES.put("edited", "entry");
-                                    LABELS.add("edited");
-                                    STEPS.removeAt(0);
-                                    STEPS.appendAll(List.of("edited", "edited"));
-                                }
-                                FlowIdContext.put(FlowId.builder().withId("remote-return").build());
-                                return new JsonObject().put("pid", ProcessHandle.current().pid()).put("token", token)
-                                    .put("peersSeen", batch == null ? 1 : batch.arrived.get());
-                            }).andThen(ignored -> {
-                                if (batch != null && batch.completed.incrementAndGet() == batch.size) {
-                                    batches.remove(batchId, batch);
-                                }
-                            }).onComplete(result -> {
-                                if (result.succeeded()) {
-                                    message.reply(result.result());
-                                } else {
-                                    message.fail(500, result.cause().toString());
-                                }
-                            });
-                        } catch (Throwable failure) {
-                            message.fail(500, failure.toString());
-                        }
-                    }).completion();
+                        }));
+                    var proxy = new ServiceBinder(vertx).setAddress(args[2] + "-proxy").register(ClusterFlowService.class,
+                        command -> process(vertx, new JsonObject(command)).map(JsonObject::encode));
+                    return Future.all(direct.completion(), proxy.completion());
                 }
             }, new DeploymentOptions().setThreadingModel(ThreadingModel.WORKER)));
             Path ready = Path.of(args[3]);
@@ -138,6 +92,59 @@ public final class ContextCollectionsClusterNode {
                     manager.getHazelcastInstance().shutdown();
                 }
             }
+        }
+    }
+
+    private static Future<JsonObject> process(Vertx vertx, JsonObject command) {
+        try {
+            ContextInternal receiver = ContextInternal.current();
+            String token = command.getString("token");
+            assertState(command.getString("state"), token);
+            check(PRIVATE.slot().get() == null, "Private state leaked into remote request");
+            FlowId received = FlowIdContext.require();
+            check(received.getId().equals(token), "Remote FlowId value");
+            var incomingMap = VALUES.slot().get();
+            var incomingSet = LABELS.slot().get();
+            var incomingList = STEPS.slot().get();
+            PRIVATE.replace(Map.of("remote", token));
+            var privateItem = PRIVATE.slot().require();
+            String batchId = command.getString("batch");
+            Batch batch = batchId == null ? null : batches.computeIfAbsent(batchId,
+                ignored -> new Batch(command.getInteger("size")));
+            if (batch != null) {
+                check(batch.size == command.getInteger("size"), "Inconsistent batch size");
+                batch.arrived.incrementAndGet();
+            }
+            Future<Void> ready = batch == null ? Future.succeededFuture()
+                : waitForPeers(vertx, batch, System.nanoTime() + TimeUnit.SECONDS.toNanos(3));
+            return ready.compose(ignored -> vertx.timer(1)).map(tick -> {
+                check(ContextInternal.current() == receiver && receiver.threadingModel() == ThreadingModel.WORKER,
+                    "Remote worker timer context");
+                check(FlowIdContext.get() == received, "Remote timer FlowId identity");
+                check(VALUES.slot().get() == incomingMap && LABELS.slot().get() == incomingSet
+                    && STEPS.slot().get() == incomingList, "Remote timer collection identity");
+                assertState(command.getString("state"), token);
+                check(PRIVATE.slot().require() == privateItem
+                    && PRIVATE.snapshot().equals(Map.of("remote", token)), "Remote private storage crossed requests");
+                if (command.getBoolean("remove")) {
+                    remove();
+                } else {
+                    replace("returned-" + token);
+                    VALUES.put("edited", "entry");
+                    LABELS.add("edited");
+                    STEPS.removeAt(0);
+                    STEPS.appendAll(List.of("edited", "edited"));
+                }
+                FlowIdContext.put(FlowId.builder().withId("remote-return").build());
+                return new JsonObject().put("pid", ProcessHandle.current().pid()).put("token", token)
+                    .put("peersSeen", batch == null ? 1 : batch.arrived.get());
+            }).andThen(ignored -> {
+                if (batch != null && batch.completed.incrementAndGet() == batch.size) {
+                    batches.remove(batchId, batch);
+                }
+            });
+        } catch (Throwable failure) {
+            return Future.failedFuture(failure);
         }
     }
 
