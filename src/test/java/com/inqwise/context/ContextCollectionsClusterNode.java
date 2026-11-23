@@ -24,6 +24,7 @@ import io.vertx.core.Vertx;
 import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.json.JsonObject;
 import io.vertx.serviceproxy.ServiceBinder;
+import io.vertx.serviceproxy.ServiceException;
 import io.vertx.spi.cluster.hazelcast.HazelcastClusterManager;
 
 import static com.inqwise.context.ClusterTestSupport.await;
@@ -138,7 +139,9 @@ public final class ContextCollectionsClusterNode {
                 FlowIdContext.put(FlowId.builder().withId("remote-return").build());
                 return new JsonObject().put("pid", ProcessHandle.current().pid()).put("token", token)
                     .put("peersSeen", batch == null ? 1 : batch.arrived.get());
-            }).andThen(ignored -> {
+            }).compose(report -> command.getBoolean("fail", false)
+                ? Future.<JsonObject>failedFuture(new ServiceException(73, report.encode()))
+                : Future.succeededFuture(report)).andThen(ignored -> {
                 if (batch != null && batch.completed.incrementAndGet() == batch.size) {
                     batches.remove(batchId, batch);
                 }

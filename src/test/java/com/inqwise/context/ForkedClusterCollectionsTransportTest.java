@@ -27,6 +27,8 @@ import io.vertx.core.ThreadingModel;
 import io.vertx.core.VerticleBase;
 import io.vertx.core.Vertx;
 import io.vertx.core.eventbus.DeliveryOptions;
+import io.vertx.core.eventbus.ReplyException;
+import io.vertx.core.eventbus.ReplyFailure;
 import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.json.JsonObject;
 import io.vertx.serviceproxy.ServiceProxyBuilder;
@@ -50,6 +52,7 @@ import static com.inqwise.context.extension.StringListContext.STEPS;
 import static com.inqwise.context.extension.StringMapContext.VALUES;
 import static com.inqwise.context.extension.StringSetContext.LABELS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -60,6 +63,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @Execution(ExecutionMode.SAME_THREAD)
 @Timeout(30)
 class ForkedClusterCollectionsTransportTest {
+    private enum Call {
+        EVENT_BUS, SERVICE_PROXY, SERVICE_FAILURE
+    }
+
     @TempDir
     static Path directory;
 
@@ -150,7 +157,7 @@ class ForkedClusterCollectionsTransportTest {
     @MethodSource("scenarios")
     void eventBus_twoJvms_transportsCollectionSnapshotsAndRemovals(ThreadingModel model, String state, boolean removal)
             throws Exception {
-        String deployment = await(deployScenario(model, state, removal, null, 1, false));
+        String deployment = await(deployScenario(model, state, removal, null, 1, Call.EVENT_BUS));
         await(sender.undeploy(deployment));
     }
 
@@ -158,7 +165,15 @@ class ForkedClusterCollectionsTransportTest {
     @MethodSource("scenarios")
     void serviceProxy_twoJvms_transportsCollectionSnapshotsAndRemovals(ThreadingModel model, String state, boolean removal)
             throws Exception {
-        String deployment = await(deployScenario(model, state, removal, null, 1, true));
+        String deployment = await(deployScenario(model, state, removal, null, 1, Call.SERVICE_PROXY));
+        await(sender.undeploy(deployment));
+    }
+
+    @ParameterizedTest
+    @MethodSource("scenarios")
+    void serviceProxy_failedReply_importsCollectionChangesAndRetainsCallerFlowId(
+            ThreadingModel model, String state, boolean removal) throws Exception {
+        String deployment = await(deployScenario(model, state, removal, null, 1, Call.SERVICE_FAILURE));
         await(sender.undeploy(deployment));
     }
 
@@ -166,39 +181,49 @@ class ForkedClusterCollectionsTransportTest {
     @MethodSource("overlapScenarios")
     void eventBus_overlappingRequests_isolateCollectionsAcrossTwoJvms(ThreadingModel model, int repetition)
             throws Exception {
-        runBatch(model, repetition, false);
+        runBatch(model, repetition, List.of(Call.EVENT_BUS));
     }
 
     @ParameterizedTest
     @MethodSource("overlapScenarios")
     void serviceProxy_overlappingRequests_isolateCollectionsAcrossTwoJvms(ThreadingModel model, int repetition)
             throws Exception {
-        runBatch(model, repetition, true);
+        runBatch(model, repetition, List.of(Call.SERVICE_PROXY));
     }
 
-    private void runBatch(ThreadingModel model, int repetition, boolean proxy) throws Exception {
+    @ParameterizedTest
+    @MethodSource("overlapScenarios")
+    void serviceProxy_mixedSuccessAndFailureReplies_isolateConcurrentCollectionChanges(
+            ThreadingModel model, int repetition) throws Exception {
+        runBatch(model, repetition, List.of(Call.SERVICE_PROXY, Call.SERVICE_FAILURE));
+    }
+
+    private void runBatch(ThreadingModel model, int repetition, List<Call> calls) throws Exception {
         String batch = repetition + "-" + UUID.randomUUID();
+        int peers = 8 * calls.size();
         List<Future<String>> pending = new ArrayList<>();
         List<String> deployed = new CopyOnWriteArrayList<>();
         try {
-            for (String state : List.of("value", "empty", "removed", "absent")) {
-                for (boolean removal : List.of(false, true)) {
-                    pending.add(deployScenario(model, state, removal, batch, 8, proxy).andThen(result -> {
-                        if (result.succeeded()) {
-                            deployed.add(result.result());
-                        }
-                    }));
+            for (Call call : calls) {
+                for (String state : List.of("value", "empty", "removed", "absent")) {
+                    for (boolean removal : List.of(false, true)) {
+                        pending.add(deployScenario(model, state, removal, batch, peers, call).andThen(result -> {
+                            if (result.succeeded()) {
+                                deployed.add(result.result());
+                            }
+                        }));
+                    }
                 }
             }
             await(Future.join(pending));
-            assertEquals(8, deployed.size());
+            assertEquals(peers, deployed.size());
         } finally {
             await(Future.join(deployed.stream().map(sender::undeploy).toList()));
         }
     }
 
     private Future<String> deployScenario(ThreadingModel model, String state, boolean removal, String batch, int peers,
-            boolean proxy) {
+            Call call) {
         return sender.deployVerticle(new VerticleBase() {
             @Override
             public Future<?> start() {
@@ -211,12 +236,23 @@ class ForkedClusterCollectionsTransportTest {
                 PRIVATE.replace(Map.of("caller", token));
                 var privateItem = PRIVATE.slot().require();
                 JsonObject command = new JsonObject().put("token", token).put("state", state).put("remove", removal)
-                    .put("batch", batch).put("size", peers);
+                    .put("batch", batch).put("size", peers).put("fail", call == Call.SERVICE_FAILURE);
                 Future<JsonObject> pending;
-                if (proxy) {
+                if (call != Call.EVENT_BUS) {
                     ClusterFlowService service = new ServiceProxyBuilder(vertx).setAddress(address + "-proxy")
                         .setOptions(new DeliveryOptions().setSendTimeout(5_000)).build(ClusterFlowService.class);
-                    pending = service.process(command.encode()).map(JsonObject::new);
+                    pending = service.process(command.encode()).transform(result -> {
+                        assertSame(caller, ContextInternal.current());
+                        if (call == Call.SERVICE_FAILURE) {
+                            assertTrue(result.failed(), "Expected controlled service failure");
+                            ReplyException failure = assertInstanceOf(ReplyException.class, result.cause());
+                            assertEquals(ReplyFailure.RECIPIENT_FAILURE, failure.failureType());
+                            assertEquals(73, failure.failureCode());
+                            return Future.succeededFuture(new JsonObject(failure.getMessage()));
+                        }
+                        return result.succeeded() ? Future.succeededFuture(new JsonObject(result.result()))
+                            : Future.failedFuture(result.cause());
+                    });
                 } else {
                     pending = vertx.eventBus().<JsonObject>request(address, command,
                         new DeliveryOptions().setSendTimeout(5_000)).map(reply -> {
