@@ -6,6 +6,10 @@ import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.inqwise.context.data.FlowId;
 import com.inqwise.context.extension.StringListContext;
@@ -31,6 +35,17 @@ import static com.inqwise.context.extension.StringSetContext.LABELS;
 /** Separate clustered JVM discovering external collection codecs through SPI. */
 public final class ContextCollectionsClusterNode {
     static final ContextMap<String, String> PRIVATE = ContextMaps.define("private_map", String.class, String.class);
+    private static final ConcurrentMap<String, Batch> batches = new ConcurrentHashMap<>();
+
+    private static final class Batch {
+        final int size;
+        final AtomicInteger arrived = new AtomicInteger();
+        final AtomicInteger completed = new AtomicInteger();
+
+        Batch(int size) {
+            this.size = size;
+        }
+    }
 
     private ContextCollectionsClusterNode() {
     }
@@ -57,12 +72,25 @@ public final class ContextCollectionsClusterNode {
                             var incomingSet = LABELS.slot().get();
                             var incomingList = STEPS.slot().get();
                             PRIVATE.replace(Map.of("remote", token));
-                            vertx.timer(1).map(tick -> {
+                            var privateItem = PRIVATE.slot().require();
+                            String batchId = command.getString("batch");
+                            Batch batch = batchId == null ? null : batches.computeIfAbsent(batchId,
+                                ignored -> new Batch(command.getInteger("size")));
+                            if (batch != null) {
+                                check(batch.size == command.getInteger("size"), "Inconsistent batch size");
+                                batch.arrived.incrementAndGet();
+                            }
+                            Future<Void> ready = batch == null ? Future.succeededFuture()
+                                : waitForPeers(vertx, batch, System.nanoTime() + TimeUnit.SECONDS.toNanos(3));
+                            ready.compose(ignored -> vertx.timer(1)).map(tick -> {
                                 check(ContextInternal.current() == receiver && receiver.threadingModel() == ThreadingModel.WORKER,
                                     "Remote worker timer context");
                                 check(FlowIdContext.get() == received, "Remote timer FlowId identity");
                                 check(VALUES.slot().get() == incomingMap && LABELS.slot().get() == incomingSet
                                     && STEPS.slot().get() == incomingList, "Remote timer collection identity");
+                                assertState(command.getString("state"), token);
+                                check(PRIVATE.slot().require() == privateItem
+                                    && PRIVATE.snapshot().equals(Map.of("remote", token)), "Remote private storage crossed requests");
                                 if (command.getBoolean("remove")) {
                                     remove();
                                 } else {
@@ -73,7 +101,12 @@ public final class ContextCollectionsClusterNode {
                                     STEPS.appendAll(List.of("edited", "edited"));
                                 }
                                 FlowIdContext.put(FlowId.builder().withId("remote-return").build());
-                                return new JsonObject().put("pid", ProcessHandle.current().pid()).put("token", token);
+                                return new JsonObject().put("pid", ProcessHandle.current().pid()).put("token", token)
+                                    .put("peersSeen", batch == null ? 1 : batch.arrived.get());
+                            }).andThen(ignored -> {
+                                if (batch != null && batch.completed.incrementAndGet() == batch.size) {
+                                    batches.remove(batchId, batch);
+                                }
                             }).onComplete(result -> {
                                 if (result.succeeded()) {
                                     message.reply(result.result());
@@ -92,6 +125,7 @@ public final class ContextCollectionsClusterNode {
             Files.writeString(pending, Long.toString(ProcessHandle.current().pid()));
             Files.move(pending, ready, StandardCopyOption.ATOMIC_MOVE);
             System.in.read();
+            check(batches.isEmpty(), "Incomplete clustered collection batch");
             check(StringMapContext.Factory.created.get() == 0 && StringSetContext.Factory.created.get() == 0
                 && StringListContext.Factory.created.get() == 0, "Remote import invoked factories");
         } finally {
@@ -105,6 +139,17 @@ public final class ContextCollectionsClusterNode {
                 }
             }
         }
+    }
+
+    private static Future<Void> waitForPeers(Vertx vertx, Batch batch, long deadline) {
+        if (batch.arrived.get() == batch.size) {
+            return Future.succeededFuture();
+        }
+        if (System.nanoTime() >= deadline) {
+            return Future.failedFuture("Concurrent collection requests did not all arrive");
+        }
+        // Poll through each request's timer rather than sharing a future bound to another context.
+        return vertx.timer(2).compose(ignored -> waitForPeers(vertx, batch, deadline));
     }
 
     static void prepare(String state, String token) {

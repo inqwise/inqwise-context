@@ -131,7 +131,7 @@ Separate loopback HTTP/1.1 tests exercise real WebClient/server exchanges, inclu
 
 Kafka-only tests use the native mock producer to verify send-time membership snapshots and edited sets/removals forwarded across two isolated consumer scopes. Consumer changes never return through producer acknowledgments; this is adapter coverage without a live broker.
 
-A separate two-JVM Hazelcast fixture validates set membership, typed emptiness, removal markers, and absence over the network, including returned whole-set replacements/removals after caller edits. It covers direct EventBus requests to a remote worker, not collection-specific ServiceProxy or overlapping clustered requests.
+A separate two-JVM Hazelcast fixture validates set membership, typed emptiness, removal markers, and absence over the network, including returned whole-set replacements/removals after caller edits. Coordinated eight-request batches verify isolated membership/removal state during overlap across all caller threading models. It covers direct EventBus requests to a remote worker, not collection-specific ServiceProxy.
 
 [source,shell]
 ----

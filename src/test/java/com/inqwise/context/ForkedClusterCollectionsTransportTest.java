@@ -3,10 +3,12 @@ package com.inqwise.context;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
@@ -146,7 +148,36 @@ class ForkedClusterCollectionsTransportTest {
     @MethodSource("scenarios")
     void eventBus_twoJvms_transportsCollectionSnapshotsAndRemovals(ThreadingModel model, String state, boolean removal)
             throws Exception {
-        String deployment = await(sender.deployVerticle(new VerticleBase() {
+        String deployment = await(deployScenario(model, state, removal, null, 1));
+        await(sender.undeploy(deployment));
+    }
+
+    @ParameterizedTest
+    @MethodSource("overlapScenarios")
+    void eventBus_overlappingRequests_isolateCollectionsAcrossTwoJvms(ThreadingModel model, int repetition)
+            throws Exception {
+        String batch = repetition + "-" + UUID.randomUUID();
+        List<Future<String>> pending = new ArrayList<>();
+        List<String> deployed = new CopyOnWriteArrayList<>();
+        try {
+            for (String state : List.of("value", "empty", "removed", "absent")) {
+                for (boolean removal : List.of(false, true)) {
+                    pending.add(deployScenario(model, state, removal, batch, 8).andThen(result -> {
+                        if (result.succeeded()) {
+                            deployed.add(result.result());
+                        }
+                    }));
+                }
+            }
+            await(Future.join(pending));
+            assertEquals(8, deployed.size());
+        } finally {
+            await(Future.join(deployed.stream().map(sender::undeploy).toList()));
+        }
+    }
+
+    private Future<String> deployScenario(ThreadingModel model, String state, boolean removal, String batch, int peers) {
+        return sender.deployVerticle(new VerticleBase() {
             @Override
             public Future<?> start() {
                 ContextInternal caller = ContextInternal.current();
@@ -158,7 +189,8 @@ class ForkedClusterCollectionsTransportTest {
                 PRIVATE.replace(Map.of("caller", token));
                 var privateItem = PRIVATE.slot().require();
                 var pending = vertx.eventBus().<JsonObject>request(address,
-                    new JsonObject().put("token", token).put("state", state).put("remove", removal),
+                    new JsonObject().put("token", token).put("state", state).put("remove", removal)
+                        .put("batch", batch).put("size", peers),
                     new DeliveryOptions().setSendTimeout(5_000));
                 ContextCollectionsClusterNode.replace("pending");
                 var pendingMap = VALUES.slot().require();
@@ -173,6 +205,7 @@ class ForkedClusterCollectionsTransportTest {
                     assertSame(caller, ContextInternal.current());
                     assertEquals(child.pid(), reply.body().getLong("pid"));
                     assertEquals(token, reply.body().getString("token"));
+                    assertEquals(peers, reply.body().getInteger("peersSeen"));
                     assertSame(removal ? null : current, FlowIdContext.get());
                     assertEquals(removal, DefaultStorage.isRemoved(DefaultStorage.getEntry(caller, "flow_id")));
                     assertSame(privateItem, PRIVATE.slot().require());
@@ -205,13 +238,17 @@ class ForkedClusterCollectionsTransportTest {
                     });
                 });
             }
-        }, new DeploymentOptions().setThreadingModel(model)));
-        await(sender.undeploy(deployment));
+        }, new DeploymentOptions().setThreadingModel(model));
     }
 
     private static Stream<Arguments> scenarios() {
         return Stream.of(ThreadingModel.EVENT_LOOP, ThreadingModel.WORKER, ThreadingModel.VIRTUAL_THREAD)
             .flatMap(model -> Stream.of("value", "empty", "removed", "absent")
                 .flatMap(state -> Stream.of(false, true).map(removal -> Arguments.of(model, state, removal))));
+    }
+
+    private static Stream<Arguments> overlapScenarios() {
+        return Stream.of(ThreadingModel.EVENT_LOOP, ThreadingModel.WORKER, ThreadingModel.VIRTUAL_THREAD)
+            .flatMap(model -> Stream.of(1, 2).map(repetition -> Arguments.of(model, repetition)));
     }
 }

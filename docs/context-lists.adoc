@@ -136,7 +136,7 @@ Separate loopback HTTP/1.1 tests use real WebClient/server exchanges and verify 
 
 Kafka-only tests use the native mock producer to verify send-time list snapshots, positional edits and duplicates, and whole-list removals forwarded across two consumer scopes. Producer acknowledgments retain the producer's newer list rather than importing consumer changes. No live broker is exercised.
 
-A separate two-JVM Hazelcast fixture validates list order/duplicates, typed empty lists, removal markers, and absence over the network. Returned whole-list replacements/removals overwrite pending caller edits while older snapshots stay unchanged. This is direct EventBus coverage with a remote worker, not collection-specific ServiceProxy or overlapping clustered requests.
+A separate two-JVM Hazelcast fixture validates list order/duplicates, typed empty lists, removal markers, and absence over the network. Returned whole-list replacements/removals overwrite pending caller edits while older snapshots stay unchanged. Coordinated eight-request batches verify per-request sequence/duplicate retention and removal isolation across all caller threading models. This is direct EventBus coverage with a remote worker, not collection-specific ServiceProxy.
 
 [source,shell]
 ----

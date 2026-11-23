@@ -147,7 +147,7 @@ Separate loopback HTTP/1.1 tests use real WebClient/server exchanges for all thr
 
 Kafka-only tests use the native mock producer to verify send-time snapshots, map edits/removals forwarded across two scoped consumers, and preservation of the producer's newer map through acknowledgments. No live broker is required or tested.
 
-A separate two-JVM Hazelcast fixture verifies map values, typed empty maps, removals, and absence across the network. Returned map replacements/removals overwrite pending caller edits without changing its current FlowId; private storage remains local. This is direct EventBus coverage, not collection-specific ServiceProxy or overlapping clustered requests.
+A separate two-JVM Hazelcast fixture verifies map values, typed empty maps, removals, and absence across the network. Returned map replacements/removals overwrite pending caller edits without changing its current FlowId; private storage remains local. Coordinated eight-request batches additionally verify map isolation while requests overlap across all caller threading models. This is direct EventBus coverage, not collection-specific ServiceProxy.
 
 [source,shell]
 ----
