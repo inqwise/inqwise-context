@@ -1,0 +1,156 @@
+package com.inqwise.context;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import com.inqwise.context.data.FlowId;
+import com.inqwise.context.extension.StringListContext;
+import com.inqwise.context.extension.StringMapContext;
+import com.inqwise.context.extension.StringSetContext;
+import io.vertx.core.DeploymentOptions;
+import io.vertx.core.Future;
+import io.vertx.core.ThreadingModel;
+import io.vertx.core.VerticleBase;
+import io.vertx.core.Vertx;
+import io.vertx.core.internal.ContextInternal;
+import io.vertx.core.json.JsonObject;
+import io.vertx.spi.cluster.hazelcast.HazelcastClusterManager;
+
+import static com.inqwise.context.ClusterTestSupport.await;
+import static com.inqwise.context.ClusterTestSupport.clusterConfig;
+import static com.inqwise.context.ClusterTestSupport.startNode;
+import static com.inqwise.context.TransportClasspathTestSupport.check;
+import static com.inqwise.context.extension.StringListContext.STEPS;
+import static com.inqwise.context.extension.StringMapContext.VALUES;
+import static com.inqwise.context.extension.StringSetContext.LABELS;
+
+/** Separate clustered JVM discovering external collection codecs through SPI. */
+public final class ContextCollectionsClusterNode {
+    static final ContextMap<String, String> PRIVATE = ContextMaps.define("private_map", String.class, String.class);
+
+    private ContextCollectionsClusterNode() {
+    }
+
+    /** Starts a worker receiver, publishes readiness, and stops when stdin closes. */
+    public static void main(String[] args) throws Exception {
+        HazelcastClusterManager manager = new HazelcastClusterManager(clusterConfig(args[0], args[1]));
+        Vertx node = null;
+        try {
+            node = await(startNode(manager));
+            await(node.deployVerticle(new VerticleBase() {
+                @Override
+                public Future<?> start() {
+                    return vertx.eventBus().<JsonObject>consumer(args[2], message -> {
+                        try {
+                            ContextInternal receiver = ContextInternal.current();
+                            JsonObject command = message.body();
+                            String token = command.getString("token");
+                            assertState(command.getString("state"), token);
+                            check(PRIVATE.slot().get() == null, "Private state leaked into remote request");
+                            FlowId received = FlowIdContext.require();
+                            check(received.getId().equals(token), "Remote FlowId value");
+                            var incomingMap = VALUES.slot().get();
+                            var incomingSet = LABELS.slot().get();
+                            var incomingList = STEPS.slot().get();
+                            PRIVATE.replace(Map.of("remote", token));
+                            vertx.timer(1).map(tick -> {
+                                check(ContextInternal.current() == receiver && receiver.threadingModel() == ThreadingModel.WORKER,
+                                    "Remote worker timer context");
+                                check(FlowIdContext.get() == received, "Remote timer FlowId identity");
+                                check(VALUES.slot().get() == incomingMap && LABELS.slot().get() == incomingSet
+                                    && STEPS.slot().get() == incomingList, "Remote timer collection identity");
+                                if (command.getBoolean("remove")) {
+                                    remove();
+                                } else {
+                                    replace("returned-" + token);
+                                    VALUES.put("edited", "entry");
+                                    LABELS.add("edited");
+                                    STEPS.removeAt(0);
+                                    STEPS.appendAll(List.of("edited", "edited"));
+                                }
+                                FlowIdContext.put(FlowId.builder().withId("remote-return").build());
+                                return new JsonObject().put("pid", ProcessHandle.current().pid()).put("token", token);
+                            }).onComplete(result -> {
+                                if (result.succeeded()) {
+                                    message.reply(result.result());
+                                } else {
+                                    message.fail(500, result.cause().toString());
+                                }
+                            });
+                        } catch (Throwable failure) {
+                            message.fail(500, failure.toString());
+                        }
+                    }).completion();
+                }
+            }, new DeploymentOptions().setThreadingModel(ThreadingModel.WORKER)));
+            Path ready = Path.of(args[3]);
+            Path pending = ready.resolveSibling(ready.getFileName() + ".pending");
+            Files.writeString(pending, Long.toString(ProcessHandle.current().pid()));
+            Files.move(pending, ready, StandardCopyOption.ATOMIC_MOVE);
+            System.in.read();
+            check(StringMapContext.Factory.created.get() == 0 && StringSetContext.Factory.created.get() == 0
+                && StringListContext.Factory.created.get() == 0, "Remote import invoked factories");
+        } finally {
+            try {
+                if (node != null) {
+                    await(node.close());
+                }
+            } finally {
+                if (manager.getHazelcastInstance() != null && manager.getHazelcastInstance().getLifecycleService().isRunning()) {
+                    manager.getHazelcastInstance().shutdown();
+                }
+            }
+        }
+    }
+
+    static void prepare(String state, String token) {
+        switch (state) {
+            case "value" -> replace(token);
+            case "empty" -> {
+                VALUES.replace(Map.of());
+                LABELS.replace(Set.of());
+                STEPS.replace(List.of());
+            }
+            case "removed" -> remove();
+            case "absent" -> { }
+            default -> throw new AssertionError("Unknown collection state");
+        }
+    }
+
+    static void replace(String token) {
+        VALUES.replace(Map.of("value", token));
+        LABELS.replace(Set.of(token));
+        STEPS.replace(List.of(token, token));
+    }
+
+    static void remove() {
+        VALUES.remove();
+        LABELS.remove();
+        STEPS.remove();
+    }
+
+    static void assertState(String state, String token) {
+        switch (state) {
+            case "value" -> {
+                check(VALUES.snapshot().equals(Map.of("value", token)), "Network map value");
+                check(LABELS.snapshot().equals(Set.of(token)), "Network set value");
+                check(STEPS.snapshot().equals(List.of(token, token)), "Network list order/duplicates");
+            }
+            case "empty" -> check(VALUES.snapshot().isEmpty() && LABELS.snapshot().isEmpty() && STEPS.snapshot().isEmpty(),
+                "Network typed empty values");
+            case "removed", "absent" -> {
+                ContextInternal context = ContextInternal.current();
+                for (String key : List.of(VALUES.slot().key(), LABELS.slot().key(), STEPS.slot().key())) {
+                    check(DefaultStorage.get(context, key) == null, "Unexpected network collection");
+                    check(DefaultStorage.isRemoved(DefaultStorage.getEntry(context, key)) == state.equals("removed"),
+                        "Network removal/absence distinction");
+                }
+            }
+            default -> throw new AssertionError("Unknown collection state");
+        }
+    }
+}
