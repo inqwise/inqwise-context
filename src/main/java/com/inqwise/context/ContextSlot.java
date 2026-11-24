@@ -18,8 +18,15 @@ public final class ContextSlot<T extends ContextChainDataItem> {
     private final String key;
     private final Class<T> type;
     private final Supplier<? extends T> defaultFactory;
+    private final Object typeIdentity;
+    private final UnaryOperator<T> validator;
 
     ContextSlot(String key, Class<T> type, Supplier<? extends T> defaultFactory) {
+        this(key, type, defaultFactory, type, UnaryOperator.identity());
+    }
+
+    ContextSlot(String key, Class<T> type, Supplier<? extends T> defaultFactory,
+            Object typeIdentity, UnaryOperator<T> validator) {
         this.key = Objects.requireNonNull(key, "Context item key is mandatory");
         if (key.isBlank()) {
             throw new IllegalArgumentException("Context item key must not be blank");
@@ -29,6 +36,17 @@ public final class ContextSlot<T extends ContextChainDataItem> {
             throw new IllegalArgumentException("Context item type must implement ContextChainDataItem");
         }
         this.defaultFactory = defaultFactory;
+        this.typeIdentity = Objects.requireNonNull(typeIdentity);
+        this.validator = Objects.requireNonNull(validator);
+    }
+
+    T castItem(ContextChainDataItem item) {
+        T value = type.cast(item);
+        return value == null ? null : validator.apply(value);
+    }
+
+    boolean hasSameType(ContextSlot<?> other) {
+        return type == other.type && typeIdentity.equals(other.typeIdentity);
     }
 
     /**
@@ -43,7 +61,8 @@ public final class ContextSlot<T extends ContextChainDataItem> {
     /**
      * Returns the declared item type used to validate stored and created values.
      *
-     * @return the item class
+     * Parameterized containers additionally validate their declared element types.
+     * @return the erased item class
      */
     public Class<T> type() {
         return type;
@@ -57,7 +76,7 @@ public final class ContextSlot<T extends ContextChainDataItem> {
      * @throws ClassCastException if the key contains another item type
      */
     public T get() {
-        return type.cast(DefaultStorage.get(key));
+        return castItem(DefaultStorage.get(key));
     }
 
     /**
@@ -85,7 +104,7 @@ public final class ContextSlot<T extends ContextChainDataItem> {
      *         an existing value is incompatible with this declaration
      */
     public void put(T value) {
-        DefaultStorage.put(key, type.cast(Objects.requireNonNull(value, "Context item is mandatory")), type);
+        DefaultStorage.put(key, castItem(Objects.requireNonNull(value, "Context item is mandatory")), this::castItem);
     }
 
     /**
@@ -108,7 +127,7 @@ public final class ContextSlot<T extends ContextChainDataItem> {
      */
     public T update(UnaryOperator<T> updater) {
         Objects.requireNonNull(updater, "Context item updater is mandatory");
-        return DefaultStorage.update(key, type, updater);
+        return DefaultStorage.update(key, this::castItem, updater);
     }
 
     /**
@@ -119,7 +138,7 @@ public final class ContextSlot<T extends ContextChainDataItem> {
      * @throws ClassCastException if the key contains another item type
      */
     public T remove() {
-        return DefaultStorage.remove(key, type);
+        return DefaultStorage.remove(key, this::castItem);
     }
 
     /**
@@ -152,6 +171,6 @@ public final class ContextSlot<T extends ContextChainDataItem> {
      */
     public T getOrCreate(Supplier<? extends T> factory) {
         Objects.requireNonNull(factory, "Context item factory is mandatory");
-        return type.cast(DefaultStorage.getOrCreate(key, () -> type.cast(factory.get())));
+        return castItem(DefaultStorage.getOrCreate(key, () -> castItem(factory.get())));
     }
 }

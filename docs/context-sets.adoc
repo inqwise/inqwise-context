@@ -1,0 +1,143 @@
+= Typed Context Sets
+:toc:
+:toclevels: 2
+
+`ContextSet<E>` is a shared context-bound handle, not a mutable `java.util.Set`. Stored `ContextSetItem<E>` values retain immutable membership snapshots and their declared element type, including when empty. This follows the link:context-maps.adoc[context map] lifecycle without treating a set as a map of flags.
+
+Use a link:context-lists.adoc[typed context list] when order and duplicate positions matter instead of uniqueness.
+
+== Declare And Initialize
+
+[source,java]
+----
+static final ContextSet<String> TAGS = ContextSets.define("tags", String.class);
+
+TAGS.getOrCreate(); // explicit initialization; empty unless SPI supplies another default
+boolean added = TAGS.add("validated");
+boolean duplicate = TAGS.add("validated"); // false: uniqueness uses normal equality
+boolean present = TAGS.contains("validated");
+Set<String> before = TAGS.snapshot();
+----
+
+Handles do not capture a flow and may be shared. Context operations resolve the active Vert.x context and fail outside it. Declaration, `item(contents)`, and `cast(item)` do not need an active context. Element types must be reference classes, not primitives; no nested generic arguments are inferred from erased class tokens.
+
+Elements need not implement `ContextChainDataItem`; the container itself does. Null elements are rejected. Element equality and hash codes must remain stable while stored. Prefer immutable elements: membership copies retain the actual supplied objects rather than deep-copying them, so mutable fields need their own synchronization and safe encoding.
+
+Uniqueness follows the element's `equals`/`hashCode`, not its serialized fields. Types inheriting identity equality do not become value-equal after decoding; use scalar identifiers or an immutable value-equal wrapper when membership must match reconstructed objects across a wire boundary.
+
+== Operations And Atomicity
+
+[cols="1,2",options="header"]
+|===
+|Operation |Contract
+|`contains(value)` |Read membership from an initialized set.
+|`add(value)` / `remove(value)` |Atomically change one membership; return whether membership changed.
+|`addAll(values)` |Atomically add a validated batch, collapsing duplicates by equality.
+|`removeAll(values)` |Atomically remove a validated batch.
+|`retainAll(values)` |Atomically keep only eligible elements.
+|`snapshot()` |Return the current immutable membership snapshot.
+|`clear()` |Retain a present, typed empty set.
+|`getOrCreate()` |Initialize an absent item through SPI or the empty fallback; do not revive removal.
+|`getOrCreate(factory)` |Initialize through an explicit factory, bypassing SPI. Results are copied.
+|`replace(values)` |Explicitly set complete contents, initializing or reintroducing the item.
+|`remove()` |Remove the entire context item and retain its transportable removal marker; return the previous snapshot or null.
+|`update(function)` |Atomically transform an initialized read-only snapshot into complete replacement contents.
+|===
+
+Batch inputs and replacement contents accept collections, so a list containing duplicates can initialize a set. All elements are validated before a batch applies; a null or incompatible element cannot leave a partial update. Inputs must not change concurrently while being copied. Snapshots preserve first encounter order locally, but codecs must define any required wire ordering themselves.
+
+[source,java]
+----
+TAGS.addAll(List.of("received", "validated", "received"));
+TAGS.removeAll(Set.of("obsolete"));
+TAGS.retainAll(Set.of("received", "validated"));
+
+Set<String> after = TAGS.update(current -> {
+    Set<String> copy = new LinkedHashSet<>(current);
+    copy.remove("received");
+    copy.add("forwarded");
+    return copy;
+});
+----
+
+Old snapshots remain unchanged. The updater receives a read-only snapshot, must return non-null contents, and must remain short, synchronous, and free of context-storage mutations or asynchronous I/O. Returned sets are defensively copied. Failures retain the prior reference but cannot undo in-place changes to application-owned elements.
+
+Each operation is atomic for one context item, not a transaction across several calls, slots, or service instances. Copy cost scales with membership size: this is flow metadata storage, not a shared cache or distributed set implementation.
+
+== Empty Versus Removed
+
+[source,java]
+----
+TAGS.clear(); // present empty value
+TAGS.add("active");
+TAGS.remove("active"); // still a present empty value
+
+Set<String> previous = TAGS.remove(); // whole item removed; marker retained
+// membership operations and getOrCreate now fail
+
+TAGS.replace(Set.of("restored")); // explicit reintroduction
+----
+
+Membership operations, `contains`, `snapshot`, `clear`, and `update` require an initialized set. They never implicitly create or revive one. Whole-item removal differs from removing the final element, and wire-level removal requires codec support.
+
+Declared element classes are checked exactly, even for empty sets. Incompatible set declarations, map/set swaps, and set/non-container replacements are rejected at the atomic write boundary, including untyped imports and erased-class writes. Optional inbound conflicts preserve the old item and do not prevent healthy providers from continuing. Explicit whole-item removal still permits reintroduction; there is no permanent global key/type registry. Use a unique stable key for each schema.
+
+== Codec And Factory SPI
+
+Declaring a set does not register its codec or install HTTP/Kafka propagation. A codec chooses its schema, element encoding, size limits, wire version, and inbound replacement policy. Do not infer arbitrary Java classes from received metadata or convert arbitrary elements to strings implicitly.
+
+The tested external-package example is link:../src/test/java/com/inqwise/context/extension/StringSetContext.java[StringSetContext]. Its codec and factory are test fixtures, not providers installed in the published library. Its essential operations are:
+
+[source,java]
+----
+String key = TAGS.slot().key();
+Set<String> outgoing = TAGS.cast(item).snapshot();
+ContextSetItem<String> decoded = TAGS.item(decodedValues);
+----
+
+`cast` validates the wrapper and element type, not only the erased class returned by `slot().type()`. `item` copies and validates known-schema elements. Nested objects need no separate storage registrations. A codec must decide whether duplicates in its wire representation are invalid; the example rejects them, although ordinary local collection inputs deduplicate naturally.
+
+Register the codec through `META-INF/services/com.inqwise.context.spi.ContextChainDataService` using its actual application class name. For custom initialization, implement `ContextItemFactory<ContextSetItem<E>>`: return the declaration's `slot()` and construct results with `TAGS.item(initialValues)`. Register it in `META-INF/services/com.inqwise.context.spi.ContextItemFactory`. Providers and descriptors must be visible to the library's defining classloader, as with ordinary items.
+
+Factory discovery is cached. Explicit `getOrCreate()` uses an SPI override before the empty fallback; reads, imports, updates, existing items, and removal markers never create values. `getOrCreate(factory)` bypasses SPI. Factory and update callbacks must not initialize other slots while the atomic construction/update runs.
+
+For opt-in adapters, include the set slot in the selected configuration:
+
+[source,java]
+----
+ContextTransportConfiguration configuration = ContextTransportConfiguration.builder()
+    .include(FlowIdContext.slot())
+    .include(TAGS.slot())
+    .build();
+----
+
+Pass the configuration and destination allowlist to the link:reference.adoc#_http_transport[HTTP] or link:reference.adoc#_kafka_transport[Kafka] adapter. EventBus automatically uses discovered codecs. Configuring a key is not codec registration.
+
+== Propagation And Return Policy
+
+Transport carries the complete current set snapshot or a whole-item removal marker, not individual add/remove operations. There is no automatic remote union, intersection, operation replay, or CRDT. Already-exported metadata remains unchanged after local membership changes; receivers construct separate snapshot instances.
+
+The codec's `replaceExistingOnInbound()` policy determines whether a returned snapshot/removal replaces current caller state, including membership changed while a call was pending. Default replacement is whole-value replacement, not set merging. Caller-preserving codecs can opt out. Kafka acknowledgments do not return consumer mutations. The separate FlowId retains its own inbound preservation policy.
+
+Treat received membership as untrusted metadata, not permissions or authenticated identity. Domain validation, authentication/authorization, and transport destination policy remain separate responsibilities.
+
+== Validation
+
+Tests cover defensive copies and iterator protection, equality-based uniqueness, atomic batch failures, empty/removal distinctions, raw misuse and type conflicts, factory matching, concurrent duplicate insertion with exactly one winner, and 256 additional concurrent unique insertions through public APIs on Vert.x-managed tasks.
+
+The shared collection forked fixture discovers actual external codecs and factories without optional clients or JUnit on its runtime classpath. It checks EventBus request/reply, empty snapshots, whole-item removal, reintroduction, timer identity, caller FlowId preservation, and direct HTTP-carrier snapshots across all three deployment modes and FlowId writer profiles.
+
+Separate loopback HTTP tests exercise real WebClient/server exchanges over HTTP/1.1, HTTP/2 upgrade/prior knowledge with both implementations, and trusted-TLS HTTP/3, asserting actual wire versions. They include membership changes while a request is pending and returned whole-set replacement/removal, distinguishing absence, empty sets, and removal markers without implicit factories. See link:reference.adoc#_collection_transport_coverage[collection transport coverage] for the matrix and limits.
+
+Kafka-only tests use the native mock producer to verify send-time membership snapshots and edited sets/removals forwarded across two isolated consumer scopes. Consumer changes never return through producer acknowledgments; this is adapter coverage without a live broker.
+
+A separate multi-JVM Hazelcast fixture validates set membership, typed emptiness, removal markers, and absence over the network, including returned whole-set replacements/removals after caller edits. Coordinated eight-request batches verify isolated membership/removal state during overlap across all caller threading models. Direct EventBus and generated ServiceProxy success paths reach the remote worker. Controlled ServiceProxy failures also return whole-set replacements/removals; sixteen-call mixed success/failure batches verify isolation without changing native error semantics. Coordinated clustered timeout cases inspect actual late set headers while preserving the expired caller's references and membership/removal/absence on the next remote call. Three-JVM forwarding includes middle-node replacement, removal, creation/reintroduction, and successful/failed returns.
+
+Separate local generated-ServiceProxy tests cover native no-handler failures, timeouts, and deliberately late set replacements/removals. Actual late headers are inspected while caller membership/removal/absence remains unchanged and is verified on the next call across all three caller threading models. These are not clustered timeout tests.
+
+Codec/carrier checks reject duplicate set elements, invalid/null element types, malformed envelopes, wrong shapes/versions, and duplicate metadata headers. Prior storage and healthy metadata survive rejection, the next valid set recovers, and observer failures cannot expose private payload text. Valid Unicode/empty/removal round trips use both HTTP and Kafka carriers.
+
+[source,shell]
+----
+mvn -Dtest=ContextSetTest,ContextCollectionsIntegrationTest,ContextItemFactoriesTest test
+----

@@ -34,10 +34,10 @@ final class ContextItemFactories {
             Supplier<? extends T> fallback) {
         Binding binding = Defaults.resolution.get().get(slot.key());
         if (binding != null) {
-            if (binding.slot().type() != slot.type()) {
+            if (!slot.hasSameType(binding.slot())) {
                 throw new IllegalStateException("Context item factory type does not match the slot declaration");
             }
-            return () -> slot.type().cast(binding.provider().create());
+            return () -> slot.castItem(binding.provider().create());
         }
         if (fallback == null) {
             throw new IllegalStateException("No factory is configured for this context item");

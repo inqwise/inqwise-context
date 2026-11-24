@@ -8,6 +8,7 @@ import java.util.ServiceConfigurationError;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -44,6 +45,105 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @ExtendWith(VertxExtension.class)
 @Timeout(10)
 class ContextTransportEngineTest {
+    @ParameterizedTest
+    @MethodSource("containerImportConflicts")
+    void engine_incompatibleContainerImport_preservesItemAndContinuesHealthyProviders(
+            String container, String conflict, boolean populated, boolean observerThrows,
+            Vertx vertx, VertxTestContext test) {
+        List<Throwable> failures = new ArrayList<>();
+        vertx.exceptionHandler(failure -> {
+            failures.add(failure);
+            if (observerThrows) {
+                throw new IllegalStateException("private-observer-data");
+            }
+        });
+        vertx.runOnContext(ignored -> test.verify(() -> {
+            ContextInternal caller = ContextInternal.current();
+            ContextMap<String, Integer> map = ContextMaps.define("container", String.class, Integer.class);
+            ContextSet<String> set = ContextSets.define("container", String.class);
+            ContextList<String> list = ContextLists.define("container", String.class);
+            ContextSlot<?> owner = switch (container) {
+                case "map" -> map.slot();
+                case "set" -> set.slot();
+                case "list" -> list.slot();
+                default -> throw new IllegalArgumentException("Unknown container");
+            };
+            ContextChainDataItem original = switch (container) {
+                case "map" -> map.item(populated ? Map.of("local", 1) : Map.of());
+                case "set" -> set.item(populated ? Set.of("local") : Set.of());
+                case "list" -> list.item(populated ? List.of("local", "local") : List.of());
+                default -> throw new IllegalArgumentException("Unknown container");
+            };
+            DefaultStorage.put(caller, "container", original, true);
+            AtomicReference<ContextChainDataItem> decoded = new AtomicReference<>(switch (conflict) {
+                case "key" -> ContextMaps.define("container", Integer.class, Integer.class).item(Map.of());
+                case "value" -> switch (container) {
+                    case "map" -> ContextMaps.define("container", String.class, Long.class).item(Map.of());
+                    case "set" -> ContextSets.define("container", Long.class).item(Set.of());
+                    case "list" -> ContextLists.define("container", Long.class).item(List.of());
+                    default -> throw new IllegalArgumentException("Unknown container");
+                };
+                case "map" -> map.item(Map.of());
+                case "set" -> set.item(Set.of());
+                case "list" -> list.item(List.of());
+                case "item" -> new OptionalItem("private-decoded-data");
+                default -> throw new IllegalArgumentException("Unknown conflict");
+            });
+            OptionalCodec codec = new OptionalCodec() {
+                @Override
+                public String key() {
+                    return "container";
+                }
+
+                @Override
+                public ContextChainDataItem unmarshalFormString(String wire) {
+                    return decoded.get();
+                }
+            };
+            FlowIdService healthy = new FlowIdService();
+            MemoryCarrier carrier = new MemoryCarrier();
+            carrier.set("container", "incoming");
+            carrier.set("flow_id", healthy.marshalToString(FlowId.builder().withId("healthy").build()));
+            ContextTransportEngine engine = new ContextTransportEngine(() -> List.of(codec, healthy));
+            engine.read(caller, carrier, Set.of("container", "flow_id"));
+            assertSame(original, owner.require());
+            assertEquals("healthy", FlowIdContext.require().getId());
+            assertEquals(1, failures.size());
+            ContextPropagationException failure = assertInstanceOf(ContextPropagationException.class, failures.getFirst());
+            assertEquals(Direction.INBOUND, failure.getDirection());
+            assertEquals(codec.getClass().getName(), failure.getProviderClassName());
+            assertEquals(ClassCastException.class.getName(), failure.getFailureType());
+            assertNull(failure.getCause());
+            assertFalse(failure.toString().contains("private-decoded-data"));
+            ContextChainDataItem valid = switch (container) {
+                case "map" -> map.item(Map.of("recovered", 2));
+                case "set" -> set.item(Set.of("recovered"));
+                case "list" -> list.item(List.of("recovered", "recovered"));
+                default -> throw new IllegalArgumentException("Unknown container");
+            };
+            decoded.set(valid);
+            engine.read(caller, carrier, Set.of("container", "flow_id"));
+            assertSame(valid, owner.require());
+            assertEquals(1, failures.size());
+            carrier.set("container", codec.marshalRemovalToString());
+            engine.read(caller, carrier, Set.of("container", "flow_id"));
+            assertTrue(DefaultStorage.isRemoved(DefaultStorage.getEntry(caller, "container")));
+            test.completeNow();
+        }));
+    }
+
+    private static Stream<Arguments> containerImportConflicts() {
+        return Stream.of("map", "set", "list").flatMap(container ->
+            (switch (container) {
+                case "map" -> Stream.of("key", "value", "item", "set", "list");
+                case "set" -> Stream.of("value", "item", "map", "list");
+                case "list" -> Stream.of("value", "item", "map", "set");
+                default -> throw new IllegalArgumentException("Unknown container");
+            })
+                .flatMap(conflict -> Stream.of(false, true).flatMap(populated -> Stream.of(false, true)
+                    .map(observer -> Arguments.of(container, conflict, populated, observer)))));
+    }
+
     @ParameterizedTest
     @MethodSource("decoderFailureModes")
     void engine_invalidDecode_preservesStorageAndRecoversOnNextMessage(

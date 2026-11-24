@@ -61,11 +61,29 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      - name: Test release version handling
+        run: bash .github/scripts/test-release-version.sh
+
+      - name: Test release credential preflight
+        run: bash .github/scripts/test-release-credentials.sh
+
+      - name: Test release signing preflight
+        run: bash .github/scripts/test-release-signing.sh
+
+      - name: Test tagged release source validation
+        run: bash .github/scripts/test-release-source.sh
+
+      - name: Test release workflow contracts
+        run: ruby .github/scripts/test-release-workflow.rb
+
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
           java-version: 21
           distribution: 'temurin'
+
+      - name: Test release asset collection
+        run: bash .github/scripts/test-release-assets.sh
 
       - name: Cache Maven dependencies
         uses: actions/cache@v4

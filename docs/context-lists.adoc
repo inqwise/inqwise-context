@@ -1,0 +1,148 @@
+= Typed Context Lists
+:toc:
+:toclevels: 2
+
+`ContextList<E>` is a shared handle resolving the active Vert.x context, not a mutable `java.util.List`. Its stored `ContextListItem<E>` carries an immutable ordered snapshot, preserving duplicates and the declared element type even when empty. It follows the same explicit lifecycle as link:context-maps.adoc[maps] and link:context-sets.adoc[sets].
+
+== Declare And Initialize
+
+[source,java]
+----
+static final ContextList<String> STEPS = ContextLists.define("steps", String.class);
+
+STEPS.getOrCreate(); // explicit initialization; empty unless SPI supplies a default
+int first = STEPS.append("received"); // 0 at this operation's publication
+int second = STEPS.append("received"); // 1: equal duplicates are retained
+STEPS.insert(1, "validated");
+List<String> snapshot = STEPS.snapshot(); // received, validated, received
+----
+
+Handles contain no flow or mutable data and may be shared. Context operations require an active Vert.x context; declarations, `item(contents)`, and `cast(item)` do not. Element classes must be reference types. Generic arguments inside erased element classes are not inferred; use an application-owned immutable wrapper when deeper validation is needed.
+
+Elements need not implement `ContextChainDataItem`; the container does. Nulls are rejected. Snapshot copies are shallow: element references are retained, so their fields must be immutable or independently safe for concurrent access and encoding. List storage does not add element synchronization or infer equality from serialized fields.
+
+== Atomic Operations
+
+[cols="1,2",options="header"]
+|===
+|Operation |Contract
+|`get(index)` |Read the element from the current immutable snapshot.
+|`append(value)` |Atomically append, returning the assigned index at publication time.
+|`insert(index, value)` |Atomically insert, shifting later positions to the right. Insertion at current size is allowed.
+|`set(index, value)` |Atomically replace one position and return its previous element.
+|`removeAt(index)` |Atomically remove one position and return its element, shifting later positions to the left.
+|`appendAll(values)` |Atomically append a validated contiguous batch in encounter order, including duplicates.
+|`insertAll(index, values)` |Atomically insert a validated contiguous batch at the current insertion position.
+|`snapshot()` |Require the current immutable snapshot; it is not a live mutable view.
+|`clear()` |Retain a present, typed empty list.
+|`getOrCreate()` |Initialize an absent item through SPI or the empty fallback; never revive removal.
+|`getOrCreate(factory)` |Initialize through an explicit factory, bypassing SPI; results are copied.
+|`replace(values)` |Explicitly set complete contents, initializing or reintroducing the item.
+|`remove()` |Remove the entire context item and retain its transportable marker; return the previous snapshot or null.
+|`update(function)` |Atomically transform a read-only snapshot into complete replacement contents.
+|===
+
+Entry and batch operations require an initialized item. A batch validates all elements before changing membership; nulls, wrong element types, or invalid indexes cannot leave a partial update. Bounds checking and positional mutation occur against the same current snapshot inside the atomic operation. `get`, `set`, and `removeAt` require `0 <= index < size`; insertion permits `index == size`. Invalid indexes throw `IndexOutOfBoundsException`.
+
+[source,java]
+----
+String previous = STEPS.set(1, "verified");
+String removed = STEPS.removeAt(0);
+STEPS.appendAll(List.of("forwarded", "forwarded"));
+STEPS.insertAll(0, List.of("ingress", "parsed"));
+----
+
+An index is a position, not a stable element identifier. Other inserts/removals can shift it immediately after an operation returns. An `append` result describes that atomic publication, not a guarantee that a later `get` sees the same element. Capture one immutable snapshot when reading several related positions consistently; use application-owned IDs when identity must survive edits or cross service boundaries. Use `removeAt(index)` for positions and `remove()` for the whole item, avoiding the index/value ambiguity of a generic `remove` overload.
+
+== Snapshot Ownership
+
+[source,java]
+----
+List<String> before = STEPS.snapshot();
+List<String> after = STEPS.update(current -> {
+    List<String> copy = new ArrayList<>(current);
+    copy.add("completed");
+    return copy;
+});
+// before is unchanged, including its order and duplicate positions
+----
+
+The updater receives a read-only list. Its returned contents are defensively copied; later changes to a mutable result cannot alter stored order or membership. Keep callbacks short, synchronous, and free of context-storage changes or asynchronous I/O. Exceptions and invalid results retain the previous reference, but cannot undo mutations to element objects.
+
+Input collections must not change concurrently during copying. Replacement accepts collections and preserves their observed encounter order; using an unordered source does not manufacture a meaningful domain order. Snapshots expose no mutable iterator, sublist, or backing array/list. Copying costs scale with size, so these containers target small flow metadata rather than shared caches or work queues.
+
+Atomicity applies to one item in one execution context, not to multiple calls or slots and not across service instances. Several `set` calls are separate operations; use one `update` or batch when a group must publish together.
+
+== Empty Versus Removed
+
+[source,java]
+----
+STEPS.clear(); // present empty value
+STEPS.append("only");
+STEPS.removeAt(0); // still a present empty value
+
+List<String> previous = STEPS.remove(); // whole-item removal marker
+// append, indexed operations, update, and getOrCreate now fail
+
+STEPS.replace(List.of("restored", "restored")); // intentional reintroduction
+----
+
+Removing the last position or calling `clear` is not whole-item removal. No read or positional mutation implicitly creates or revives an item. Exact element types are checked even when empty. Incompatible declarations, map/set/list swaps, and list/non-container replacement are rejected at the atomic write boundary, including untyped imports and erased-class slots. Whole-item removal is still permitted under the codec's inbound policy; explicit replacement afterward creates a fresh item. There is no permanent global key/type registry.
+
+== Codec And Factory SPI
+
+Declaring a list does not install a codec or enable HTTP/Kafka propagation. Application codecs own their schema, element encoding, size limits, version compatibility, and inbound replacement policy. They must encode sequence order and retain duplicates rather than converting the list into a set or guessing element classes from metadata.
+
+The tested external-package example is link:../src/test/java/com/inqwise/context/extension/StringListContext.java[StringListContext]. Its providers are test fixtures, not registrations included in the library JAR. Essential codec operations are:
+
+[source,java]
+----
+String key = STEPS.slot().key();
+List<String> outgoing = STEPS.cast(item).snapshot();
+ContextListItem<String> decoded = STEPS.item(decodedValues);
+----
+
+`cast` validates the wrapper and declared element class, including empty values; `slot().type()` alone is an erased class token. `item` validates and copies known-schema contents without allowing network data to choose Java classes. Nested element fields do not require separate storage registrations.
+
+Register the codec through `META-INF/services/com.inqwise.context.spi.ContextChainDataService` using its actual application class name. For custom initialization, implement `ContextItemFactory<ContextListItem<E>>`, return the declaration's `slot()`, and construct complete initial values with `STEPS.item(initialValues)`. Register it in `META-INF/services/com.inqwise.context.spi.ContextItemFactory`. Providers and descriptors must be visible to the library's defining classloader.
+
+Factory discovery is cached. Explicit `getOrCreate()` consults SPI before the empty fallback, while existing values, reads, imports, updates, and removal markers never invoke a factory. `getOrCreate(factory)` bypasses SPI. Callback restrictions and type checks match ordinary context items; raw factory declarations cannot stand in for parameterized list declarations.
+
+For opt-in protocol adapters, include the list slot:
+
+[source,java]
+----
+ContextTransportConfiguration configuration = ContextTransportConfiguration.builder()
+    .include(FlowIdContext.slot())
+    .include(STEPS.slot())
+    .build();
+----
+
+Pass the configuration and destination allowlist to the link:reference.adoc#_http_transport[HTTP] or link:reference.adoc#_kafka_transport[Kafka] adapter. EventBus automatically uses discovered codecs. Choosing a key is not codec registration; the FlowId writer-profile setting does not choose a list codec.
+
+== Propagation And Return Policy
+
+The wire carries complete snapshots or whole-item removal markers, not positional edits. There is no remote append replay, index reconciliation, operation log, or automatic merge. Already-exported metadata remains unchanged after local edits; receivers create distinct snapshot objects. Correct codecs preserve the transmitted sequence and duplicates.
+
+Returned snapshots/removals follow the codec's `replaceExistingOnInbound()` policy. Default replacement can replace caller edits made while the call was pending; preserving caller state requires a codec that opts out. This does not change FlowId's separate preservation policy. Kafka acknowledgments do not return consumer changes. Received elements are untrusted metadata, not authenticated identity, permissions, or trusted commands.
+
+== Validation
+
+Tests cover immutable input copies and list views, order and duplicate retention, bounds failures without partial mutation, raw element/declaration misuse, lifecycle rules, and factory matching. Concurrent public appends verify 264 retained positions, eight duplicate elements, distinct assigned indexes, and each writer's relative sequence, using Vert.x-managed tasks.
+
+The shared map/set/list forked fixture discovers real external codecs and factories without optional clients or JUnit. It exercises EventBus request/reply, ordered duplicates, empty snapshots, whole-item removal/reintroduction, timer identity, caller FlowId preservation, and direct HTTP-carrier snapshots across all three deployment modes and FlowId writer profiles.
+
+Separate loopback HTTP tests use real WebClient/server exchanges over HTTP/1.1, HTTP/2 upgrade/prior knowledge with both implementations, and trusted-TLS HTTP/3, asserting actual wire versions. They verify sequence/duplicate retention, in-flight caller edits, returned whole-list replacement/removal, absence, private storage isolation, and timer identity. See link:reference.adoc#_collection_transport_coverage[collection transport coverage] for the matrix and limits.
+
+Kafka-only tests use the native mock producer to verify send-time list snapshots, positional edits and duplicates, and whole-list removals forwarded across two consumer scopes. Producer acknowledgments retain the producer's newer list rather than importing consumer changes. No live broker is exercised.
+
+A separate multi-JVM Hazelcast fixture validates list order/duplicates, typed empty lists, removal markers, and absence over the network. Returned whole-list replacements/removals overwrite pending caller edits while older snapshots stay unchanged. Coordinated eight-request batches verify per-request sequence/duplicate retention and removal isolation across all caller threading models. Direct EventBus and generated ServiceProxy success paths run this matrix against a remote worker. Controlled ServiceProxy failures also return list replacements/removals; sixteen-call mixed success/failure batches verify per-request sequences and native error semantics. Coordinated clustered timeout cases inspect actual late list headers and preserve the expired caller's references and current sequence/removal/absence on the next remote call. Three-JVM forwarding also verifies middle-node replacement, removal, creation/reintroduction, and sequence retention through successful/failed returns.
+
+Separate local generated-ServiceProxy tests cover native no-handler failures, timeouts, and deliberately late list replacements/removals. They inspect late wire headers, preserve the expired caller's snapshot references, and verify current order/duplicates or removal/absence on the next call across all three caller threading models. They do not add clustered timeout coverage.
+
+Codec/carrier tests preserve list duplicates and reject malformed/versioned envelopes, wrong shapes, null/non-string elements, and duplicate metadata headers. Invalid input leaves prior storage intact, healthy metadata still imports, and a valid retry recovers even with a throwing error observer. Unicode/empty/removal round trips use both HTTP and Kafka carriers.
+
+[source,shell]
+----
+mvn -Dtest=ContextListTest,ContextCollectionsIntegrationTest,ContextItemFactoriesTest test
+----
