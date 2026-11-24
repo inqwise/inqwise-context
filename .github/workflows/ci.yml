@@ -61,6 +61,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      - name: Test release version handling
+        run: bash .github/scripts/test-release-version.sh
+
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:

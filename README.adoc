@@ -252,6 +252,8 @@ CI tests JDK 21, 22, 25, and 27. Newer build JDKs are rejected by Maven Enforcer
 Run `mvn test` for tests and coverage, or `mvn verify` to also check packaging and Javadocs.
 JaCoCo generates HTML and XML reports under `target/site/jacoco`.
 
+Run `bash .github/scripts/test-release-version.sh` for offline release-input regression checks; this does not create tags, push commits, or publish artifacts. Manual releases accept a non-snapshot version without a `v` prefix, while published-release events preserve their exact prefixed or unprefixed tag.
+
 The optional Snyk workflow explicitly skips scans when the repository's `SNYK_TOKEN` secret is absent; a skipped scan is not a clean security result. When configured, the CLI runs on the runner's configured JDK rather than inside a Maven action container, and vulnerability findings or scan errors fail the scan step. The separate Snyk GitHub-app status is independent of this workflow.
 
 == Acknowledgments
