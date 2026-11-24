@@ -15,6 +15,17 @@ GUARD = 'bash "$GITHUB_WORKSPACE/.github/scripts/verify-release-source.sh"'
 def validate(workflow)
   steps = workflow.fetch('jobs').fetch('release').fetch('steps')
   errors = []
+  release_job = workflow.fetch('jobs').fetch('release')
+  errors << 'deny token permissions by default' unless workflow['permissions'] == {}
+  errors << 'release job contents-only write access' unless release_job['permissions'] == { 'contents' => 'write' }
+  errors << 'release repository boundary' unless release_job['if'] == "github.repository == 'inqwise/inqwise-context'"
+  # Psych versions using YAML 1.1 parse an unquoted `on` key as boolean true.
+  events = workflow['on'] || workflow[true]
+  if !events.is_a?(Hash) || events.keys.sort != %w[release workflow_dispatch]
+    errors << 'release-only workflow triggers'
+  elsif events['release'] != { 'types' => ['published'] }
+    errors << 'published release trigger'
+  end
   concurrency = workflow['concurrency']
   expected_concurrency = {
     'group' => 'inqwise-context-release', 'cancel-in-progress' => false, 'queue' => 'max'
@@ -194,7 +205,7 @@ checks.each_with_index do |mutate, index|
   mutate.call(candidate.fetch('jobs').fetch('release').fetch('steps'))
   abort "Broken workflow mutation #{index + 1} was accepted" if validate(candidate).empty?
 end
-queue_mutations = [
+policy_mutations = [
   ->(workflow) { workflow.delete('concurrency') },
   ->(workflow) { workflow['concurrency'] = 'inqwise-context-release' },
   ->(workflow) { workflow['concurrency']['group'] = '${{ github.ref }}' },
@@ -202,11 +213,22 @@ queue_mutations = [
   ->(workflow) { workflow['concurrency'].delete('cancel-in-progress') },
   ->(workflow) { workflow['concurrency']['queue'] = 'single' },
   ->(workflow) { workflow['concurrency'].delete('queue') },
-  ->(workflow) { workflow.fetch('jobs').fetch('release')['concurrency'] = 'another-group' }
+  ->(workflow) { workflow.fetch('jobs').fetch('release')['concurrency'] = 'another-group' },
+  ->(workflow) { workflow.delete('permissions') },
+  ->(workflow) { workflow['permissions'] = 'write-all' },
+  ->(workflow) { workflow['permissions'] = { 'contents' => 'write' } },
+  ->(workflow) { workflow.fetch('jobs').fetch('release').delete('permissions') },
+  ->(workflow) { workflow.fetch('jobs').fetch('release')['permissions'] = { 'contents' => 'read' } },
+  ->(workflow) { workflow.fetch('jobs').fetch('release')['permissions'] = 'write-all' },
+  ->(workflow) { workflow.fetch('jobs').fetch('release')['permissions']['issues'] = 'write' },
+  ->(workflow) { workflow.fetch('jobs').fetch('release').delete('if') },
+  ->(workflow) { workflow.fetch('jobs').fetch('release')['if'] = 'true' },
+  ->(workflow) { (workflow['on'] || workflow[true])['pull_request'] = {} },
+  ->(workflow) { (workflow['on'] || workflow[true])['release']['types'] = ['created'] }
 ]
-queue_mutations.each_with_index do |mutate, index|
+policy_mutations.each_with_index do |mutate, index|
   candidate = Marshal.load(Marshal.dump(RELEASE))
   mutate.call(candidate)
-  abort "Broken release queue mutation #{index + 1} was accepted" if validate(candidate).empty?
+  abort "Broken release policy mutation #{index + 1} was accepted" if validate(candidate).empty?
 end
-puts "Passed release workflow contract and #{checks.length + queue_mutations.length} rejected wiring mutations"
+puts "Passed release workflow contract and #{checks.length + policy_mutations.length} rejected wiring mutations"

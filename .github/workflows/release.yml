@@ -15,11 +15,15 @@ concurrency:
   cancel-in-progress: false
   queue: max
 
+permissions: {}
+
 jobs:
   release:
     name: Release to Maven Central
     runs-on: ubuntu-latest
     if: github.repository == 'inqwise/inqwise-context'
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout code
