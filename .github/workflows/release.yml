@@ -74,7 +74,7 @@ jobs:
       - name: Maven Release (Manual Trigger)
         if: github.event_name == 'workflow_dispatch'
         run: |
-          mvn -B -ntp release:clean release:prepare release:perform \
+          mvn -B -ntp release:clean release:prepare \
             "-DreleaseVersion=$RELEASE_VERSION" \
             "-DdevelopmentVersion=$DEVELOPMENT_VERSION" \
             "-Dtag=$RELEASE_TAG" \
@@ -84,9 +84,6 @@ jobs:
           RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
           RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
           DEVELOPMENT_VERSION: ${{ steps.version.outputs.development_version }}
-          MAVEN_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
-          MAVEN_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
-          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
 
       - name: Create detached release source
         env:

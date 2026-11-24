@@ -60,7 +60,7 @@ def validate(workflow)
     'GPG_PRIVATE_KEY' => '${{ secrets.GPG_PRIVATE_KEY }}'
   }
   errors << 'credential secret bindings' unless credentials['env'] == expected_credentials
-  expected_prepare = %w[mvn -B -ntp release:clean release:prepare release:perform] + [
+  expected_prepare = %w[mvn -B -ntp release:clean release:prepare] + [
     '-DreleaseVersion=$RELEASE_VERSION', '-DdevelopmentVersion=$DEVELOPMENT_VERSION',
     '-Dtag=$RELEASE_TAG', '-DskipTests',
     '-Darguments=-B -ntp -Dmaven.deploy.skip=true -DskipTests'
@@ -72,9 +72,7 @@ def validate(workflow)
     'RELEASE_VERSION' => VERSION, 'RELEASE_TAG' => TAG,
     'DEVELOPMENT_VERSION' => '${{ steps.version.outputs.development_version }}'
   }
-  expected_prepare_env.each do |name, value|
-    errors << 'validated preparation inputs' unless prepare.fetch('env')[name] == value
-  end
+  errors << 'validated preparation inputs without publishing credentials' unless prepare['env'] == expected_prepare_env
   errors << 'resolver output identity' unless resolve['id'] == 'version'
   errors << 'source output identity' unless source['id'] == 'source'
   errors << 'detached tagged worktree' unless create['run'] == <<~SH
@@ -199,6 +197,18 @@ end
 checks << lambda do |steps|
   step = steps.find { |entry| entry['name'] == 'Maven Release (Manual Trigger)' }
   step['run'] = step.fetch('run').sub('-Darguments="-B -ntp ', '-Darguments="')
+end
+['release:perform', 'deploy', 'site-deploy'].each do |goal|
+  checks << lambda do |steps|
+    step = steps.find { |entry| entry['name'] == 'Maven Release (Manual Trigger)' }
+    step['run'] = step.fetch('run').sub('release:prepare', "release:prepare #{goal}")
+  end
+end
+%w[MAVEN_USERNAME MAVEN_PASSWORD MAVEN_GPG_PASSPHRASE].each do |name|
+  checks << lambda do |steps|
+    step = steps.find { |entry| entry['name'] == 'Maven Release (Manual Trigger)' }
+    step.fetch('env')[name] = '${{ secrets.UNNECESSARY_SECRET }}'
+  end
 end
 checks.each_with_index do |mutate, index|
   candidate = Marshal.load(Marshal.dump(RELEASE))
