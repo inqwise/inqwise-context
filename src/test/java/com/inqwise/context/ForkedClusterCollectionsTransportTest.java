@@ -64,7 +64,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @Timeout(30)
 class ForkedClusterCollectionsTransportTest {
     private enum Call {
-        EVENT_BUS, SERVICE_PROXY, SERVICE_FAILURE
+        EVENT_BUS, SERVICE_PROXY, SERVICE_FAILURE, SERVICE_CHAIN, SERVICE_CHAIN_FAILURE;
+
+        boolean chain() {
+            return this == SERVICE_CHAIN || this == SERVICE_CHAIN_FAILURE;
+        }
+
+        boolean failure() {
+            return this == SERVICE_FAILURE || this == SERVICE_CHAIN_FAILURE;
+        }
+    }
+
+    private record Child(Process process, Path log) {
     }
 
     @TempDir
@@ -72,8 +83,9 @@ class ForkedClusterCollectionsTransportTest {
 
     private Vertx sender;
     private HazelcastClusterManager manager;
+    private final List<Child> children = new ArrayList<>();
     private Process child;
-    private Path log;
+    private Process tail;
     private String address;
 
     @BeforeAll
@@ -98,44 +110,48 @@ class ForkedClusterCollectionsTransportTest {
             StringMapContext.Factory.class.getName() + "\n" + StringSetContext.Factory.class.getName() + "\n"
                 + StringListContext.Factory.class.getName() + "\n");
         String seed = "127.0.0.1:" + manager.getHazelcastInstance().getCluster().getLocalMember().getAddress().getPort();
-        Path ready = directory.resolve("receiver.ready");
-        log = directory.resolve("receiver.log");
-        child = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
-            "-D" + FlowIdService.CODEC_PROPERTY + "=json", "-cp", runtime + File.pathSeparator
+        String tailAddress = "tail-" + UUID.randomUUID();
+        tail = startChild(cluster, seed, "tail", tailAddress, "-", "gzip");
+        child = startChild(cluster, seed, "receiver", address, tailAddress, "json");
+        assertEquals(3, manager.getHazelcastInstance().getCluster().getMembers().size());
+        assertNotEquals(child.pid(), tail.pid());
+    }
+
+    private Process startChild(String cluster, String seed, String name, String nodeAddress, String next, String codec)
+            throws Exception {
+        Path ready = directory.resolve(name + ".ready");
+        Path log = directory.resolve(name + ".log");
+        Process process = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+            "-D" + FlowIdService.CODEC_PROPERTY + "=" + codec, "-cp", directory.resolve("runtime") + File.pathSeparator
                 + System.getProperty("surefire.test.class.path", System.getProperty("java.class.path")),
-            ContextCollectionsClusterNode.class.getName(), cluster, seed, address, ready.toString())
+            ContextCollectionsClusterNode.class.getName(), cluster, seed, nodeAddress, ready.toString(), next)
             .redirectErrorStream(true).redirectOutput(log.toFile()).start();
+        children.add(new Child(process, log));
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
         while (!Files.exists(ready)) {
-            if (!child.isAlive() || System.nanoTime() >= deadline) {
+            if (!process.isAlive() || System.nanoTime() >= deadline) {
                 throw new AssertionError("Collection receiver did not become ready:\n" + Files.readString(log));
             }
             Thread.sleep(25);
         }
-        assertEquals(Long.toString(child.pid()), Files.readString(ready));
-        assertNotEquals(ProcessHandle.current().pid(), child.pid());
-        assertEquals(2, manager.getHazelcastInstance().getCluster().getMembers().size());
+        assertEquals(Long.toString(process.pid()), Files.readString(ready));
+        assertNotEquals(ProcessHandle.current().pid(), process.pid());
+        return process;
     }
 
     @AfterAll
     @Timeout(90)
     void stopCluster() throws Exception {
+        Exception failure = null;
         try {
-            if (child != null) {
+            for (Child node : children.reversed()) {
                 try {
-                    child.getOutputStream().close();
-                    assertTrue(child.waitFor(15, TimeUnit.SECONDS), "Collection receiver did not stop");
-                    assertEquals(0, child.exitValue(), () -> {
-                        try {
-                            return Files.readString(log);
-                        } catch (Exception error) {
-                            return error.toString();
-                        }
-                    });
-                } finally {
-                    if (child.isAlive()) {
-                        child.destroyForcibly();
-                        assertTrue(child.waitFor(5, TimeUnit.SECONDS), "Cannot terminate collection receiver");
+                    stopChild(node);
+                } catch (Exception error) {
+                    if (failure == null) {
+                        failure = error;
+                    } else {
+                        failure.addSuppressed(error);
                     }
                 }
             }
@@ -148,6 +164,26 @@ class ForkedClusterCollectionsTransportTest {
                 if (manager != null && manager.getHazelcastInstance() != null
                         && manager.getHazelcastInstance().getLifecycleService().isRunning()) {
                     manager.getHazelcastInstance().shutdown();
+                }
+            }
+        }
+        if (failure != null) {
+            throw failure;
+        }
+    }
+
+    private static void stopChild(Child node) throws Exception {
+        Process process = node.process();
+        try {
+            process.getOutputStream().close();
+            if (!process.waitFor(15, TimeUnit.SECONDS) || process.exitValue() != 0) {
+                throw new IllegalStateException("Collection child did not stop normally:\n" + Files.readString(node.log()));
+            }
+        } finally {
+            if (process.isAlive()) {
+                process.destroyForcibly();
+                if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("Cannot terminate collection child " + process.pid());
                 }
             }
         }
@@ -174,6 +210,14 @@ class ForkedClusterCollectionsTransportTest {
     void serviceProxy_failedReply_importsCollectionChangesAndRetainsCallerFlowId(
             ThreadingModel model, String state, boolean removal) throws Exception {
         String deployment = await(deployScenario(model, state, removal, null, 1, Call.SERVICE_FAILURE));
+        await(sender.undeploy(deployment));
+    }
+
+    @ParameterizedTest
+    @MethodSource("chainScenarios")
+    void serviceProxy_threeJvms_forwardAndReturnCollectionsAcrossSuccessAndFailure(
+            ThreadingModel model, String state, boolean removal, Call call) throws Exception {
+        String deployment = await(deployScenario(model, state, removal, null, 1, call));
         await(sender.undeploy(deployment));
     }
 
@@ -367,14 +411,14 @@ class ForkedClusterCollectionsTransportTest {
                 PRIVATE.replace(Map.of("caller", token));
                 var privateItem = PRIVATE.slot().require();
                 JsonObject command = new JsonObject().put("token", token).put("state", state).put("remove", removal)
-                    .put("batch", batch).put("size", peers).put("fail", call == Call.SERVICE_FAILURE);
+                    .put("batch", batch).put("size", peers).put("fail", call.failure()).put("chain", call.chain());
                 Future<JsonObject> pending;
                 if (call != Call.EVENT_BUS) {
                     ClusterFlowService service = new ServiceProxyBuilder(vertx).setAddress(address + "-proxy")
                         .setOptions(new DeliveryOptions().setSendTimeout(5_000)).build(ClusterFlowService.class);
                     pending = service.process(command.encode()).transform(result -> {
                         assertSame(caller, ContextInternal.current());
-                        if (call == Call.SERVICE_FAILURE) {
+                        if (call.failure()) {
                             assertTrue(result.failed(), "Expected controlled service failure");
                             ReplyException failure = assertInstanceOf(ReplyException.class, result.cause());
                             assertEquals(ReplyFailure.RECIPIENT_FAILURE, failure.failureType());
@@ -405,15 +449,23 @@ class ForkedClusterCollectionsTransportTest {
                     assertEquals(child.pid(), reply.getLong("pid"));
                     assertEquals(token, reply.getString("token"));
                     assertEquals(peers, reply.getInteger("peersSeen"));
+                    if (call.chain()) {
+                        assertEquals(tail.pid(), reply.getJsonObject("child").getLong("pid"));
+                        assertEquals(token, reply.getJsonObject("child").getString("token"));
+                        String forwarded = state.equals("value") && removal ? "removed"
+                            : (state.equals("removed") || state.equals("absent")) && !removal ? "value" : state;
+                        assertEquals(forwarded, reply.getString("forwardedState"));
+                    }
                     assertSame(removal ? null : current, FlowIdContext.get());
                     assertEquals(removal, DefaultStorage.isRemoved(DefaultStorage.getEntry(caller, "flow_id")));
                     assertSame(privateItem, PRIVATE.slot().require());
                     if (removal) {
                         ContextCollectionsClusterNode.assertState("removed", token);
                     } else {
-                        assertEquals(Map.of("value", "returned-" + token, "edited", "entry"), VALUES.snapshot());
-                        assertEquals(Set.of("returned-" + token, "edited"), LABELS.snapshot());
-                        assertEquals(List.of("returned-" + token, "edited", "edited"), STEPS.snapshot());
+                        String prefix = call.chain() ? "tail-" : "returned-";
+                        assertEquals(Map.of("value", prefix + token, "edited", "entry"), VALUES.snapshot());
+                        assertEquals(Set.of(prefix + token, "edited"), LABELS.snapshot());
+                        assertEquals(List.of(prefix + token, "edited", "edited"), STEPS.snapshot());
                     }
                     assertNotSame(pendingMap, VALUES.slot().get());
                     assertNotSame(pendingSet, LABELS.slot().get());
@@ -448,5 +500,10 @@ class ForkedClusterCollectionsTransportTest {
     private static Stream<Arguments> overlapScenarios() {
         return Stream.of(ThreadingModel.EVENT_LOOP, ThreadingModel.WORKER, ThreadingModel.VIRTUAL_THREAD)
             .flatMap(model -> Stream.of(1, 2).map(repetition -> Arguments.of(model, repetition)));
+    }
+
+    private static Stream<Arguments> chainScenarios() {
+        return scenarios().flatMap(arguments -> Stream.of(Call.SERVICE_CHAIN, Call.SERVICE_CHAIN_FAILURE)
+            .map(call -> Arguments.of(arguments.get()[0], arguments.get()[1], arguments.get()[2], call)));
     }
 }

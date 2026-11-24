@@ -19,6 +19,8 @@ import com.inqwise.context.proxy.ClusterFlowService;
 import io.vertx.core.DeploymentOptions;
 import io.vertx.core.Future;
 import io.vertx.core.Promise;
+import io.vertx.core.eventbus.DeliveryOptions;
+import io.vertx.core.eventbus.ReplyException;
 import io.vertx.core.ThreadingModel;
 import io.vertx.core.VerticleBase;
 import io.vertx.core.Vertx;
@@ -26,6 +28,7 @@ import io.vertx.core.internal.ContextInternal;
 import io.vertx.core.json.JsonObject;
 import io.vertx.serviceproxy.ServiceBinder;
 import io.vertx.serviceproxy.ServiceException;
+import io.vertx.serviceproxy.ServiceProxyBuilder;
 import io.vertx.spi.cluster.hazelcast.HazelcastClusterManager;
 
 import static com.inqwise.context.ClusterTestSupport.await;
@@ -92,7 +95,7 @@ public final class ContextCollectionsClusterNode {
                 @Override
                 public Future<?> start() {
                     var direct = vertx.eventBus().<JsonObject>consumer(args[2], message ->
-                        process(vertx, message.body()).onComplete(result -> {
+                        process(vertx, message.body(), args.length > 4 ? args[4] : "-").onComplete(result -> {
                             if (result.succeeded()) {
                                 message.reply(result.result());
                             } else {
@@ -100,7 +103,7 @@ public final class ContextCollectionsClusterNode {
                             }
                         }));
                     var proxy = new ServiceBinder(vertx).setAddress(args[2] + "-proxy").register(ClusterFlowService.class,
-                        command -> process(vertx, new JsonObject(command)).map(JsonObject::encode));
+                        command -> process(vertx, new JsonObject(command), args.length > 4 ? args[4] : "-").map(JsonObject::encode));
                     var control = vertx.eventBus().<JsonObject>consumer(args[2] + "-control", message -> {
                         // Coordination replies must not echo caller metadata back into its storage.
                         DefaultStorage.reset(ContextInternal.current());
@@ -146,8 +149,11 @@ public final class ContextCollectionsClusterNode {
         }
     }
 
-    private static Future<JsonObject> process(Vertx vertx, JsonObject command) {
+    private static Future<JsonObject> process(Vertx vertx, JsonObject command, String nextAddress) {
         try {
+            if (command.getBoolean("chain", false)) {
+                return processChain(vertx, command, nextAddress);
+            }
             if (command.getBoolean("inspect", false)) {
                 return inspect(vertx, command);
             }
@@ -213,6 +219,93 @@ public final class ContextCollectionsClusterNode {
         } catch (Throwable failure) {
             return Future.failedFuture(failure);
         }
+    }
+
+    private static Future<JsonObject> processChain(Vertx vertx, JsonObject command, String nextAddress) {
+        boolean terminal = nextAddress.equals("-");
+        String token = command.getString("token");
+        String state = command.getString("state");
+        boolean removal = command.getBoolean("remove");
+        ContextInternal scope = ContextInternal.current();
+        FlowId incoming = FlowIdContext.require();
+        String expected = terminal ? "middle-" + token : token;
+        check(incoming.getId().equals(expected), "Chain incoming FlowId");
+        assertState(state, expected);
+        check(PRIVATE.slot().get() == null, "Private metadata crossed a chain hop");
+        PRIVATE.replace(Map.of("node", expected));
+        var privateItem = PRIVATE.slot().require();
+        var receivedMap = VALUES.slot().get();
+        var receivedSet = LABELS.slot().get();
+        var receivedList = STEPS.slot().get();
+        return vertx.timer(1).compose(tick -> {
+            check(ContextInternal.current() == scope && scope.threadingModel() == ThreadingModel.WORKER, "Chain worker context");
+            check(FlowIdContext.get() == incoming && VALUES.slot().get() == receivedMap && LABELS.slot().get() == receivedSet
+                && STEPS.slot().get() == receivedList, "Chain incoming timer identity");
+            if (terminal) {
+                if (removal) {
+                    remove();
+                } else {
+                    replace("tail-" + token);
+                    VALUES.put("edited", "entry");
+                    LABELS.add("edited");
+                    STEPS.removeAt(0);
+                    STEPS.appendAll(List.of("edited", "edited"));
+                }
+                FlowIdContext.put(FlowId.builder().withId("tail-" + token).build());
+                JsonObject report = new JsonObject().put("pid", ProcessHandle.current().pid()).put("token", token);
+                return command.getBoolean("fail", false) ? Future.failedFuture(new ServiceException(73, report.encode()))
+                    : Future.succeededFuture(report);
+            }
+            String forwardedState = state.equals("value") && removal ? "removed"
+                : (state.equals("removed") || state.equals("absent")) && !removal ? "value" : state;
+            prepare(forwardedState, "middle-" + token);
+            FlowId middle = FlowId.builder().withId("middle-" + token).build();
+            FlowIdContext.put(middle);
+            var sentMap = VALUES.slot().get();
+            var sentSet = LABELS.slot().get();
+            var sentList = STEPS.slot().get();
+            ClusterFlowService next = new ServiceProxyBuilder(vertx).setAddress(nextAddress + "-proxy")
+                .setOptions(new DeliveryOptions().setSendTimeout(5_000)).build(ClusterFlowService.class);
+            return next.process(command.copy().put("state", forwardedState).encode()).transform(result -> {
+                check(ContextInternal.current() == scope && FlowIdContext.get() == middle, "Tail reply changed middle FlowId/context");
+                check(PRIVATE.slot().require() == privateItem, "Tail reply changed middle private storage");
+                if (removal) {
+                    assertState("removed", token);
+                } else {
+                    check(VALUES.snapshot().equals(Map.of("value", "tail-" + token, "edited", "entry")), "Tail map return");
+                    check(LABELS.snapshot().equals(Set.of("tail-" + token, "edited")), "Tail set return");
+                    check(STEPS.snapshot().equals(List.of("tail-" + token, "edited", "edited")), "Tail list return");
+                    check(VALUES.slot().get() != sentMap && LABELS.slot().get() != sentSet && STEPS.slot().get() != sentList,
+                        "Tail collections were not decoded into middle scope");
+                }
+                JsonObject child;
+                if (command.getBoolean("fail", false)) {
+                    check(result.failed() && result.cause() instanceof ReplyException, "Expected tail service failure");
+                    ReplyException failure = (ReplyException) result.cause();
+                    check(failure.failureCode() == 73, "Tail service failure code");
+                    child = new JsonObject(failure.getMessage());
+                } else {
+                    if (result.failed()) {
+                        return Future.failedFuture(result.cause());
+                    }
+                    child = new JsonObject(result.result());
+                }
+                check(child.getLong("pid") != ProcessHandle.current().pid() && token.equals(child.getString("token")),
+                    "Tail process/report isolation");
+                var returnedMap = VALUES.slot().get();
+                var returnedSet = LABELS.slot().get();
+                var returnedList = STEPS.slot().get();
+                return vertx.timer(1).compose(ignored -> {
+                    check(ContextInternal.current() == scope && FlowIdContext.get() == middle, "Middle return timer identity");
+                    check(VALUES.slot().get() == returnedMap && LABELS.slot().get() == returnedSet
+                        && STEPS.slot().get() == returnedList, "Middle collection return timer identity");
+                    JsonObject report = new JsonObject().put("pid", ProcessHandle.current().pid()).put("token", token)
+                        .put("peersSeen", 1).put("child", child).put("forwardedState", forwardedState);
+                    return command.getBoolean("fail", false) ? Future.failedFuture(new ServiceException(73, report.encode()))
+                        : Future.succeededFuture(report);
+                });
+            });
+        });
     }
 
     private static Future<JsonObject> inspect(Vertx vertx, JsonObject command) {

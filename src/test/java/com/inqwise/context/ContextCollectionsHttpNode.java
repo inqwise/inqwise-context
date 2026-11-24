@@ -1,6 +1,7 @@
 package com.inqwise.context;
 
 import java.net.URI;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -19,10 +20,17 @@ import io.vertx.core.Promise;
 import io.vertx.core.ThreadingModel;
 import io.vertx.core.VerticleBase;
 import io.vertx.core.Vertx;
+import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.HttpServerConfig;
+import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.internal.ContextInternal;
+import io.vertx.core.net.ClientSSLOptions;
+import io.vertx.core.net.PfxOptions;
+import io.vertx.core.net.ServerSSLOptions;
 import io.vertx.ext.web.client.WebClient;
+import io.vertx.ext.web.client.WebClientConfig;
 import io.vertx.ext.web.client.WebClientOptions;
 
 import static com.inqwise.context.TransportClasspathTestSupport.check;
@@ -32,6 +40,25 @@ import static com.inqwise.context.extension.StringSetContext.LABELS;
 
 /** Real loopback HTTP collection propagation with external codec/factory discovery. */
 public final class ContextCollectionsHttpNode {
+    enum Protocol {
+        HTTP1(HttpVersion.HTTP_1_1, false, false),
+        HTTP2(HttpVersion.HTTP_2, false, false),
+        HTTP2_UPGRADE(HttpVersion.HTTP_2, false, true),
+        HTTP2_MULTIPLEX(HttpVersion.HTTP_2, true, false),
+        HTTP2_MULTIPLEX_UPGRADE(HttpVersion.HTTP_2, true, true),
+        HTTP3(HttpVersion.HTTP_3, false, false);
+
+        final HttpVersion version;
+        final boolean multiplex;
+        final boolean upgrade;
+
+        Protocol(HttpVersion version, boolean multiplex, boolean upgrade) {
+            this.version = version;
+            this.multiplex = multiplex;
+            this.upgrade = upgrade;
+        }
+    }
+
     private static final ContextMap<String, String> PRIVATE = ContextMaps.define("private_map", String.class, String.class);
     private static final ContextTransportConfiguration CONFIGURATION = ContextTransportConfiguration.builder()
         .include(FlowIdContext.slot()).include(VALUES.slot()).include(LABELS.slot()).include(STEPS.slot()).build();
@@ -48,16 +75,34 @@ public final class ContextCollectionsHttpNode {
     /** Exercises in-flight replacement/removal with each deployed caller threading model. */
     public static void main(String[] args) throws Exception {
         TransportClasspathTestSupport.requireAbsent("io.vertx.kafka.client.producer.KafkaProducer", "org.junit.jupiter.api.Assertions");
+        Protocol protocol = Protocol.valueOf(args[0]);
+        PfxOptions certificate = protocol == Protocol.HTTP3 ? HttpTestCertificate.create(Path.of(args[1])) : null;
         Vertx vertx = Vertx.vertx();
-        WebClient client = WebClient.create(vertx, new WebClientOptions().setProtocolVersion(HttpVersion.HTTP_1_1));
+        WebClient client;
+        HttpServer listener;
+        if (protocol == Protocol.HTTP3) {
+            client = WebClient.create(vertx, new WebClientConfig().setVersions(HttpVersion.HTTP_3).setSsl(true).setVerifyHost(true),
+                new ClientSSLOptions().setTrustOptions(new PfxOptions(certificate)));
+            HttpServerConfig config = new HttpServerConfig().setVersions(HttpVersion.HTTP_3);
+            config.getQuicConfig().setHost("127.0.0.1").setPort(0);
+            listener = vertx.createHttpServer(config, new ServerSSLOptions().setKeyCertOptions(new PfxOptions(certificate)));
+        } else {
+            WebClientOptions options = new WebClientOptions().setProtocolVersion(protocol.version)
+                .setHttp2ClearTextUpgrade(protocol.upgrade);
+            options.setHttp2MultiplexImplementation(protocol.multiplex);
+            client = WebClient.create(vertx, options);
+            listener = vertx.createHttpServer(new HttpServerOptions().setHost("127.0.0.1").setPort(0)
+                .setHttp2MultiplexImplementation(protocol.multiplex));
+        }
         Map<String, Exchange> exchanges = new ConcurrentHashMap<>();
         AtomicReference<Throwable> unexpected = new AtomicReference<>();
         vertx.exceptionHandler(failure -> unexpected.compareAndSet(null, failure));
         try {
-            var server = vertx.createHttpServer().requestHandler(HttpContextTransport.handler(CONFIGURATION,
-                request -> handle(vertx, request, exchanges.get(request.path().substring(1)))))
-                .listen(0, "127.0.0.1").toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
-            HttpContextTransport.install(client, CONFIGURATION, URI.create("http://127.0.0.1:" + server.actualPort()));
+            var server = listener.requestHandler(HttpContextTransport.handler(CONFIGURATION,
+                request -> handle(vertx, request, exchanges.get(request.path().substring(1)), protocol.version)))
+                .listen().toCompletionStage().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            HttpContextTransport.install(client, CONFIGURATION,
+                URI.create((protocol == Protocol.HTTP3 ? "https" : "http") + "://127.0.0.1:" + server.actualPort()));
             for (ThreadingModel model : List.of(ThreadingModel.EVENT_LOOP, ThreadingModel.WORKER, ThreadingModel.VIRTUAL_THREAD)) {
                 for (String state : List.of("value", "empty", "removed", "absent")) {
                     String token = model.name() + "-" + state;
@@ -83,7 +128,7 @@ public final class ContextCollectionsHttpNode {
                                 exchange.changed().complete();
                                 return pending.compose(response -> {
                                     check(ContextInternal.current() == caller, "Caller response context");
-                                    check(response.version() == HttpVersion.HTTP_1_1, "HTTP response version");
+                                    check(response.version() == protocol.version, "HTTP response version");
                                     check(response.statusCode() == 200 && token.equals(response.bodyAsString()),
                                         "HTTP collection payload: " + response.bodyAsString());
                                     check(token.equals(response.getHeader("application")), "Application response header");
@@ -174,10 +219,11 @@ public final class ContextCollectionsHttpNode {
         }
     }
 
-    private static void handle(Vertx vertx, HttpServerRequest request, Exchange exchange) {
+    private static void handle(Vertx vertx, HttpServerRequest request, Exchange exchange, HttpVersion version) {
         try {
             check(exchange != null, "Unknown exchange");
-            check(request.version() == HttpVersion.HTTP_1_1, "HTTP request version");
+            check(request.version() == version, "HTTP request version");
+            check(request.scheme().equals(version == HttpVersion.HTTP_3 ? "https" : "http"), "HTTP request scheme");
             String token = request.path().substring(1);
             check(token.equals(request.getHeader("application")), "Application request header");
             ContextInternal receiver = ContextInternal.current();

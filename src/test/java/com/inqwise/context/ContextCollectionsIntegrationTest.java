@@ -3,6 +3,7 @@ package com.inqwise.context;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.stream.Stream;
 
 import com.inqwise.context.data.FlowIdService.CodecProfile;
 import com.inqwise.context.extension.StringListContext;
@@ -13,7 +14,9 @@ import com.inqwise.context.spi.ContextItemFactory;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 @Timeout(40)
 class ContextCollectionsIntegrationTest {
@@ -28,13 +31,14 @@ class ContextCollectionsIntegrationTest {
     }
 
     @ParameterizedTest
-    @EnumSource(CodecProfile.class)
-    void collections_httpRoundTrip_replacesPendingCallerCollectionsWithoutChangingFlowIdPolicy(CodecProfile profile)
+    @MethodSource("httpModes")
+    void collections_httpRoundTrip_replacesPendingCallerCollectionsWithoutChangingFlowIdPolicy(
+            CodecProfile profile, ContextCollectionsHttpNode.Protocol protocol)
             throws Exception {
         registerProviders();
         TransportClasspathTestSupport.runNode(ContextCollectionsHttpNode.class, profile, directory,
             List.of("vertx-web-client-", "vertx-web-common-", "vertx-uri-template-", "vertx-auth-common-"),
-            "CONTEXT_COLLECTIONS_HTTP_OK");
+            "CONTEXT_COLLECTIONS_HTTP_OK", protocol.name(), directory.toString());
     }
 
     @ParameterizedTest
@@ -55,5 +59,10 @@ class ContextCollectionsIntegrationTest {
         Files.writeString(services.resolve(ContextItemFactory.class.getName()),
             StringMapContext.Factory.class.getName() + "\n" + StringSetContext.Factory.class.getName() + "\n"
                 + StringListContext.Factory.class.getName() + "\n");
+    }
+
+    private static Stream<Arguments> httpModes() {
+        return Stream.of(CodecProfile.values()).flatMap(profile -> Stream.of(ContextCollectionsHttpNode.Protocol.values())
+            .map(protocol -> Arguments.of(profile, protocol)));
     }
 }
