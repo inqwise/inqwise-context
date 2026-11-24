@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-We actively support the following versions of inqwise-walker with security updates:
+We actively support the following versions of inqwise-context with security updates:
 
 | Version | Supported          |
 | ------- | ------------------ |
@@ -14,16 +14,18 @@ We actively support the following versions of inqwise-walker with security updat
 
 This project uses multiple security scanning tools to identify and address vulnerabilities:
 
-### 🔍 **Automated Security Scans (All Free Tools)**
+### 🔍 **Automated Security Scans**
 
-- **Snyk (Free Tier)**: Scans dependencies for known vulnerabilities - unlimited for public repos
-- **OWASP Dependency Check (Open Source)**: Identifies vulnerable components using CVE database
-- **GitHub Dependabot (Free)**: Automated dependency updates with security patches
-- **GitHub CodeQL (Free for Public)**: Static analysis for code security issues
+- **Snyk**: Dependency scanning is configured in [the dedicated workflow](.github/workflows/snyk.yml). Scans are skipped when `SNYK_TOKEN` is not configured.
+- **OWASP Dependency Check**: [The CI workflow](.github/workflows/ci.yml) runs a dependency check with a configured CVSS failure threshold of 7.
+- **GitHub Dependabot**: [The repository configuration](.github/dependabot.yml) schedules weekly Maven and GitHub Actions update checks.
+- **GitHub CodeQL**: [The CodeQL workflow](.github/workflows/codeql.yml) configures source-code analysis.
+
+A passing build or test suite is not evidence that every security scan ran or that no vulnerabilities exist. Review scan reports and skipped jobs separately.
 
 ### 📊 **Security Badges**
 
-- [![Known Vulnerabilities](https://snyk.io/test/github/inqwise/inqwise-walker/badge.svg)](https://snyk.io/test/github/inqwise/inqwise-walker)
+- [![Known Vulnerabilities](https://snyk.io/test/github/inqwise/inqwise-context/badge.svg)](https://snyk.io/test/github/inqwise/inqwise-context)
 - CI pipeline includes security checks on every pull request
 
 ## Reporting a Vulnerability
@@ -55,7 +57,7 @@ We take security vulnerabilities seriously. If you discover a security vulnerabi
 
 ## Security Best Practices
 
-When using inqwise-walker in your projects:
+When using inqwise-context in your projects:
 
 ### ✅ **Recommended Practices**
 
@@ -65,24 +67,24 @@ When using inqwise-walker in your projects:
    - Use dependency scanning tools
 
 2. **Input Validation**
-   - Validate all input data before walking
+   - Validate incoming context metadata at application trust boundaries
    - Sanitize data from untrusted sources
    - Implement proper error handling
 
 3. **Access Control**
    - Limit access to sensitive object structures
-   - Use appropriate authentication and authorization
+   - Use appropriate authentication and authorization; context metadata is not authenticated identity or permission
    - Follow principle of least privilege
 
 ### ⚠️ **Security Considerations**
 
 1. **Performance Impact**
-   - Be aware of potential DoS through deeply nested objects
+   - Bound metadata sizes and the work performed by application-owned codecs
    - Implement appropriate timeouts and limits
-   - Monitor resource usage during walking operations
+   - Monitor resource usage during metadata encoding and decoding
 
 2. **Data Exposure**
-   - Be careful when logging or outputting walked data
+   - Be careful when logging or outputting context metadata
    - Sanitize sensitive information in error messages
    - Implement proper data masking for sensitive fields
 
@@ -90,11 +92,13 @@ When using inqwise-walker in your projects:
 
 ### 📦 **Production Dependencies**
 
-All production dependencies are scanned for vulnerabilities:
+The direct dependency scopes are defined in `pom.xml`:
 - Vert.x Core (provided scope)
 - Google Guava (provided scope)
-- Apache Log4j API (required)
-- Inqwise Difference (provided scope)
+- Apache Log4j Core (provided scope; applications supply their logging runtime)
+- Apache Log4j API and Apache Commons IO (required)
+- Vert.x Codegen (optional build/code-generation dependency)
+- Vert.x WebClient and Kafka client (optional, provided scope; applications supply clients for the adapters they use)
 
 ### 🧪 **Test Dependencies**
 
@@ -119,4 +123,4 @@ Security updates are distributed through:
 
 ---
 
-*This security policy was last updated: October 2024*
+*This security policy was last updated: November 24, 2026*
