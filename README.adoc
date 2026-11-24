@@ -31,41 +31,19 @@ The library separates two concerns:
 
 === Add the Library
 
-The examples target this working tree's `1.2.0-SNAPSHOT` API and Vert.x `5.2.3`.
-Build and install it locally before using these coordinates:
-
-[source,shell]
-----
-mvn clean install
-----
-
-Provide Vert.x Core and Guava in the consuming application's runtime; they are provided-scope dependencies of the library.
-The standalone example also supplies Log4j Core; keep your existing logging provider instead if your application already has one.
+Set `latest.version` to the library release you want to use.
 
 [source,xml]
 ----
 <dependency>
     <groupId>com.inqwise</groupId>
     <artifactId>inqwise-context</artifactId>
-    <version>1.2.0-SNAPSHOT</version>
-</dependency>
-<dependency>
-    <groupId>io.vertx</groupId>
-    <artifactId>vertx-core</artifactId>
-    <version>5.2.3</version>
-</dependency>
-<dependency>
-    <groupId>com.google.guava</groupId>
-    <artifactId>guava</artifactId>
-    <version>33.8.0-jre</version>
-</dependency>
-<dependency>
-    <groupId>org.apache.logging.log4j</groupId>
-    <artifactId>log4j-core</artifactId>
-    <version>2.26.1</version>
-    <scope>runtime</scope>
+    <version>${latest.version}</version>
 </dependency>
 ----
+
+Provide Vert.x Core and Guava in the consuming application's runtime; they are provided-scope dependencies of the library.
+Supply Log4j Core or keep your existing compatible logging provider.
 
 Use Java 21 or newer. Preserve the library's `META-INF/services` registrations when assembling an executable or shaded JAR.
 Vert.x discovers the EventBus integration automatically; there is no manual interceptor initialization in application code.
