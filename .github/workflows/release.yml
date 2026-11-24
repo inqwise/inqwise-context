@@ -59,6 +59,11 @@ jobs:
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
 
+      - name: Verify release signing
+        run: bash .github/scripts/verify-release-signing.sh
+        env:
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+
       - name: Configure Git user
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

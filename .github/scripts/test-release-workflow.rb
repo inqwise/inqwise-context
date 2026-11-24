@@ -40,6 +40,7 @@ def validate(workflow)
   resolve = find.call('Resolve release version')
   credentials = find.call('Verify release credentials')
   setup = find.call('Set up JDK 21')
+  signing = find.call('Verify release signing')
   configure = find.call('Configure Git user')
   prepare = find.call('Maven Release (Manual Trigger)')
   create = find.call('Create detached release source')
@@ -49,7 +50,7 @@ def validate(workflow)
   assets = find.call('Prepare Release Assets')
   manual = find.call('Create GitHub Release (Manual Trigger)')
   existing = find.call('Upload Release Assets (Existing Release)')
-  ordered = [resolve, credentials, setup, configure, prepare, create, source, build, deploy, assets, manual, existing]
+  ordered = [resolve, credentials, setup, signing, configure, prepare, create, source, build, deploy, assets, manual, existing]
   errors << 'release step order' unless ordered.map { |step| steps.index(step) }.each_cons(2).all? { |a, b| a < b }
   errors << 'credential preflight command' unless credentials['run'] == 'bash .github/scripts/verify-release-credentials.sh'
   errors << 'unconditional credential preflight' if credentials.key?('if')
@@ -60,6 +61,11 @@ def validate(workflow)
     'GPG_PRIVATE_KEY' => '${{ secrets.GPG_PRIVATE_KEY }}'
   }
   errors << 'credential secret bindings' unless credentials['env'] == expected_credentials
+  errors << 'signing preflight command' unless signing['run'] == 'bash .github/scripts/verify-release-signing.sh'
+  errors << 'unconditional signing preflight' if signing.key?('if')
+  errors << 'fail-closed signing preflight' if signing['continue-on-error']
+  expected_signing_env = { 'MAVEN_GPG_PASSPHRASE' => '${{ secrets.GPG_PASSPHRASE }}' }
+  errors << 'signing passphrase binding' unless signing['env'] == expected_signing_env
   expected_prepare = %w[mvn -B -ntp release:clean release:prepare] + [
     '-DreleaseVersion=$RELEASE_VERSION', '-DdevelopmentVersion=$DEVELOPMENT_VERSION',
     '-Dtag=$RELEASE_TAG', '-DskipTests',
@@ -125,7 +131,7 @@ end
 errors = validate(RELEASE)
 abort "Release workflow contract failed: #{errors.join(', ')}" unless errors.empty?
 ci_steps = CI.fetch('jobs').fetch('code-quality').fetch('steps')
-%w[version credentials source assets].each do |name|
+%w[version credentials signing source assets].each do |name|
   command = "bash .github/scripts/test-release-#{name}.sh"
   abort "Missing CI regression command: #{command}" unless ci_steps.any? { |step| step['run'] == command && !step['if'] && !step['continue-on-error'] }
 end
@@ -138,6 +144,9 @@ mutations = [
   ['Verify release credentials', 'run', 'true'],
   ['Verify release credentials', 'if', 'false'],
   ['Verify release credentials', 'continue-on-error', true],
+  ['Verify release signing', 'run', 'true'],
+  ['Verify release signing', 'if', 'false'],
+  ['Verify release signing', 'continue-on-error', true],
   ['Verify tagged release source', 'id', 'wrong'],
   ['Create detached release source', 'run', 'git checkout "$RELEASE_TAG"'],
   ['Verify tagged release source', 'working-directory', '.'],
@@ -154,6 +163,7 @@ nested = [
   ['Verify release credentials', 'env', 'MAVEN_USERNAME', 'wrong'],
   ['Verify release credentials', 'env', 'MAVEN_PASSWORD', 'wrong'],
   ['Verify release credentials', 'env', 'GPG_PRIVATE_KEY', 'wrong'],
+  ['Verify release signing', 'env', 'MAVEN_GPG_PASSPHRASE', 'wrong'],
   ['Maven Release (Manual Trigger)', 'env', 'RELEASE_VERSION', 'wrong'],
   ['Maven Release (Manual Trigger)', 'env', 'RELEASE_TAG', 'wrong'],
   ['Maven Release (Manual Trigger)', 'env', 'DEVELOPMENT_VERSION', 'wrong'],
@@ -181,6 +191,16 @@ end)
 checks << ->(steps) { steps.reverse! }
 checks << lambda do |steps|
   preflight = steps.find { |step| step['name'] == 'Verify release credentials' }
+  steps.delete(preflight)
+  steps << preflight
+end
+checks << lambda do |steps|
+  preflight = steps.find { |step| step['name'] == 'Verify release signing' }
+  steps.delete(preflight)
+  steps.unshift(preflight)
+end
+checks << lambda do |steps|
+  preflight = steps.find { |step| step['name'] == 'Verify release signing' }
   steps.delete(preflight)
   steps << preflight
 end

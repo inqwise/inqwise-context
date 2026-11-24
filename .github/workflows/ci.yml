@@ -67,6 +67,9 @@ jobs:
       - name: Test release credential preflight
         run: bash .github/scripts/test-release-credentials.sh
 
+      - name: Test release signing preflight
+        run: bash .github/scripts/test-release-signing.sh
+
       - name: Test tagged release source validation
         run: bash .github/scripts/test-release-source.sh
 
