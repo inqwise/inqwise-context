@@ -70,6 +70,9 @@ jobs:
           java-version: 21
           distribution: 'temurin'
 
+      - name: Test release asset collection
+        run: bash .github/scripts/test-release-assets.sh
+
       - name: Cache Maven dependencies
         uses: actions/cache@v4
         with:

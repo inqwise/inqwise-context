@@ -85,38 +85,9 @@ jobs:
 
       - name: Prepare Release Assets
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
-        run: |
-          # The Maven release process already built the correct artifacts
-          # We need to find them in the Maven local repository after release:perform
-          VERSION="$RELEASE_VERSION"
-          git checkout -f "$RELEASE_TAG"
-          MAVEN_REPO="$HOME/.m2/repository/com/inqwise/inqwise-context/$VERSION"
-
-          mkdir -p release-assets
-
-          # Copy the release artifacts from Maven local repository
-          if [ -d "$MAVEN_REPO" ]; then
-            cp "$MAVEN_REPO/inqwise-context-$VERSION.jar" release-assets/ || echo "Main JAR not found"
-            cp "$MAVEN_REPO/inqwise-context-$VERSION-sources.jar" release-assets/ || echo "Sources JAR not found"
-            cp "$MAVEN_REPO/inqwise-context-$VERSION-javadoc.jar" release-assets/ || echo "Javadoc JAR not found"
-          else
-            echo "Maven repository directory not found: $MAVEN_REPO"
-            echo "Falling back to building artifacts with correct version"
-            # Checkout the release tag to build the correct version
-            git checkout "$RELEASE_TAG"
-            mvn clean package -P sonatype-oss-release -DskipTests
-            cp target/inqwise-context-*.jar release-assets/
-          fi
-
-          # List what we actually have
-          echo "Release assets prepared:"
-          ls -la release-assets/
+        run: bash .github/scripts/prepare-release-assets.sh
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
-          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
-          MAVEN_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
-          MAVEN_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
-          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
 
       - name: Create GitHub Release (Manual Trigger)
         if: github.event_name == 'workflow_dispatch'
@@ -140,6 +111,7 @@ jobs:
             - Main library JAR
             - Sources JAR
             - Javadoc JAR
+            - Detached GPG signatures
             - All artifacts GPG signed
 
             ## 🔗 Links
@@ -148,7 +120,14 @@ jobs:
 
             ---
             *Released automatically via GitHub Actions*
-          files: release-assets/*
+          files: |
+            release-assets/inqwise-context-${{ steps.version.outputs.release_version }}.jar
+            release-assets/inqwise-context-${{ steps.version.outputs.release_version }}.jar.asc
+            release-assets/inqwise-context-${{ steps.version.outputs.release_version }}-sources.jar
+            release-assets/inqwise-context-${{ steps.version.outputs.release_version }}-sources.jar.asc
+            release-assets/inqwise-context-${{ steps.version.outputs.release_version }}-javadoc.jar
+            release-assets/inqwise-context-${{ steps.version.outputs.release_version }}-javadoc.jar.asc
+          fail_on_unmatched_files: true
           draft: false
           prerelease: false
         env:
@@ -158,7 +137,14 @@ jobs:
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: release-assets/*
-          overwrite: true
+          files: |
+            release-assets/inqwise-context-${{ steps.version.outputs.release_version }}.jar
+            release-assets/inqwise-context-${{ steps.version.outputs.release_version }}.jar.asc
+            release-assets/inqwise-context-${{ steps.version.outputs.release_version }}-sources.jar
+            release-assets/inqwise-context-${{ steps.version.outputs.release_version }}-sources.jar.asc
+            release-assets/inqwise-context-${{ steps.version.outputs.release_version }}-javadoc.jar
+            release-assets/inqwise-context-${{ steps.version.outputs.release_version }}-javadoc.jar.asc
+          fail_on_unmatched_files: true
+          overwrite_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
