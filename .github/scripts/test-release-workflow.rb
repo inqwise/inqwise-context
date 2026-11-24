@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 require 'yaml'
 require 'open3'
+require 'shellwords'
 
 ROOT = File.expand_path('../..', __dir__)
 RELEASE = YAML.safe_load(File.read(File.join(ROOT, '.github/workflows/release.yml')))
@@ -48,6 +49,21 @@ def validate(workflow)
     'GPG_PRIVATE_KEY' => '${{ secrets.GPG_PRIVATE_KEY }}'
   }
   errors << 'credential secret bindings' unless credentials['env'] == expected_credentials
+  expected_prepare = %w[mvn -B -ntp release:clean release:prepare release:perform] + [
+    '-DreleaseVersion=$RELEASE_VERSION', '-DdevelopmentVersion=$DEVELOPMENT_VERSION',
+    '-Dtag=$RELEASE_TAG', '-DskipTests',
+    '-Darguments=-B -ntp -Dmaven.deploy.skip=true -DskipTests'
+  ]
+  # Remove shell line continuations before parsing argument boundaries, not values.
+  prepare_arguments = Shellwords.shellsplit(prepare.fetch('run').gsub("\\\n", ''))
+  errors << 'non-interactive release arguments' unless prepare_arguments == expected_prepare
+  expected_prepare_env = {
+    'RELEASE_VERSION' => VERSION, 'RELEASE_TAG' => TAG,
+    'DEVELOPMENT_VERSION' => '${{ steps.version.outputs.development_version }}'
+  }
+  expected_prepare_env.each do |name, value|
+    errors << 'validated preparation inputs' unless prepare.fetch('env')[name] == value
+  end
   errors << 'resolver output identity' unless resolve['id'] == 'version'
   errors << 'source output identity' unless source['id'] == 'source'
   errors << 'detached tagged worktree' unless create['run'] == <<~SH
@@ -65,6 +81,10 @@ def validate(workflow)
   errors << 'published release event commit pin' unless source.fetch('env')['RELEASE_COMMIT'] == event_pin
   errors << 'tagged tests' unless build['run'] == 'mvn -B -ntp clean verify'
   errors << 'pre-deploy source guard' unless deploy.fetch('run').lines.first.strip == GUARD
+  expected_deploy = %w[mvn -B -ntp clean deploy -P sonatype-oss-release -Dmaven.deploy.skip=true -DskipTests] +
+                    ['-DreleaseVersion=$RELEASE_VERSION']
+  deployment_lines = deploy.fetch('run').lines.drop(1).join
+  errors << 'non-interactive deployment arguments' unless Shellwords.shellsplit(deployment_lines) == expected_deploy
   errors << 'verified commit pin' unless deploy.fetch('env')['RELEASE_COMMIT'] == COMMIT
   [source, deploy].each do |step|
     errors << 'source version/tag binding' unless step.fetch('env').values_at('RELEASE_VERSION', 'RELEASE_TAG') == [VERSION, TAG]
@@ -125,6 +145,9 @@ nested = [
   ['Verify release credentials', 'env', 'MAVEN_USERNAME', 'wrong'],
   ['Verify release credentials', 'env', 'MAVEN_PASSWORD', 'wrong'],
   ['Verify release credentials', 'env', 'GPG_PRIVATE_KEY', 'wrong'],
+  ['Maven Release (Manual Trigger)', 'env', 'RELEASE_VERSION', 'wrong'],
+  ['Maven Release (Manual Trigger)', 'env', 'RELEASE_TAG', 'wrong'],
+  ['Maven Release (Manual Trigger)', 'env', 'DEVELOPMENT_VERSION', 'wrong'],
   ['Create detached release source', 'env', 'RELEASE_TAG', 'wrong'],
   ['Verify tagged release source', 'env', 'RELEASE_VERSION', 'wrong'],
   ['Verify tagged release source', 'env', 'RELEASE_COMMIT', ''],
@@ -154,6 +177,18 @@ checks << lambda do |steps|
 end
 checks << ->(steps) { steps.first['run'] = 'echo ${{ inputs.version }}' }
 checks << ->(steps) { steps.first['run'] = 'if broken' }
+['Maven Release (Manual Trigger)', 'Deploy to Maven Central'].each do |name|
+  ['-B ', '-ntp '].each do |flag|
+    checks << lambda do |steps|
+      step = steps.find { |entry| entry['name'] == name }
+      step['run'] = step.fetch('run').sub(flag, '')
+    end
+  end
+end
+checks << lambda do |steps|
+  step = steps.find { |entry| entry['name'] == 'Maven Release (Manual Trigger)' }
+  step['run'] = step.fetch('run').sub('-Darguments="-B -ntp ', '-Darguments="')
+end
 checks.each_with_index do |mutate, index|
   candidate = Marshal.load(Marshal.dump(RELEASE))
   mutate.call(candidate.fetch('jobs').fetch('release').fetch('steps'))

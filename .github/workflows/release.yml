@@ -70,12 +70,12 @@ jobs:
       - name: Maven Release (Manual Trigger)
         if: github.event_name == 'workflow_dispatch'
         run: |
-          mvn release:clean release:prepare release:perform \
+          mvn -B -ntp release:clean release:prepare release:perform \
             "-DreleaseVersion=$RELEASE_VERSION" \
             "-DdevelopmentVersion=$DEVELOPMENT_VERSION" \
             "-Dtag=$RELEASE_TAG" \
             -DskipTests \
-            -Darguments="-Dmaven.deploy.skip=true -DskipTests"
+            -Darguments="-B -ntp -Dmaven.deploy.skip=true -DskipTests"
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
           RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
@@ -109,7 +109,7 @@ jobs:
         working-directory: ${{ runner.temp }}/inqwise-release-source
         run: |
           bash "$GITHUB_WORKSPACE/.github/scripts/verify-release-source.sh"
-          mvn clean deploy -P sonatype-oss-release -Dmaven.deploy.skip=true -DskipTests "-DreleaseVersion=$RELEASE_VERSION"
+          mvn -B -ntp clean deploy -P sonatype-oss-release -Dmaven.deploy.skip=true -DskipTests "-DreleaseVersion=$RELEASE_VERSION"
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
           RELEASE_TAG: ${{ steps.version.outputs.release_tag }}

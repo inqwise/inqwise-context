@@ -252,7 +252,7 @@ CI tests JDK 21, 22, 25, and 27. Newer build JDKs are rejected by Maven Enforcer
 Run `mvn test` for tests and coverage, or `mvn verify` to also check packaging and Javadocs.
 JaCoCo generates HTML and XML reports under `target/site/jacoco`.
 
-Run `bash .github/scripts/test-release-version.sh` for offline release-input regression checks; this does not create tags, push commits, or publish artifacts. Manual releases accept a non-snapshot version without a `v` prefix, while published-release events preserve their exact prefixed or unprefixed tag.
+Run `bash .github/scripts/test-release-version.sh` for offline release-input regression checks; this does not create tags, push commits, or publish artifacts. Manual releases accept a non-snapshot version without a `v` prefix, while published-release events preserve their exact prefixed or unprefixed tag. Release preparation, its forked Maven execution, and deployment use https://maven.apache.org/maven-release/maven-release-plugin/usage/non-interactive-release.html[Maven batch mode] with validated version inputs rather than interactive prompts.
 
 Run `bash .github/scripts/test-release-credentials.sh` for offline credential-preflight checks using synthetic secrets only. Releases reject missing or blank Maven credentials and signing keys before key import or manual release preparation can push commits and tags. This checks configuration presence, not credential authentication or key validity, and does not require a passphrase for an unprotected signing key. Credential contents are never printed by the preflight.
 
