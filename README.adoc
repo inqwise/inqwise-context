@@ -258,6 +258,8 @@ Run `bash .github/scripts/test-release-assets.sh` to check release-asset collect
 
 Run `bash .github/scripts/test-release-source.sh` for offline tagged-source regression checks in temporary Git repositories with a controlled Maven command. `RUN_REAL_MAVEN=1` additionally evaluates a fixture's effective coordinates using the locally cached Maven Help plugin, still offline. Releases build and test a fresh detached tagged worktree and recheck its pinned commit, clean state, and Maven coordinates before deployment; the workflow source checkout is left intact.
 
+Run `ruby .github/scripts/test-release-workflow.rb` to validate release step ordering, tagged-source checks, commit bindings, and exact upload paths. This offline check uses Ruby's standard library, rejects deliberately broken workflow variants, and never executes workflow commands.
+
 The optional Snyk workflow explicitly skips scans when the repository's `SNYK_TOKEN` secret is absent; a skipped scan is not a clean security result. When configured, the CLI runs on the runner's configured JDK rather than inside a Maven action container, and vulnerability findings or scan errors fail the scan step. The separate Snyk GitHub-app status is independent of this workflow.
 
 == Acknowledgments

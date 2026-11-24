@@ -67,6 +67,9 @@ jobs:
       - name: Test tagged release source validation
         run: bash .github/scripts/test-release-source.sh
 
+      - name: Test release workflow contracts
+        run: ruby .github/scripts/test-release-workflow.rb
+
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
