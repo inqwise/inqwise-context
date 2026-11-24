@@ -256,6 +256,8 @@ Run `bash .github/scripts/test-release-version.sh` for offline release-input reg
 
 Run `bash .github/scripts/test-release-assets.sh` to check release-asset collection with the JDK's `jar` tool and GnuPG. It creates and removes an isolated temporary test keyring, without accessing your signing keys or publishing artifacts. Release uploads require the three expected JARs and their verified detached signatures from the fresh build, not Maven's cache.
 
+Run `bash .github/scripts/test-release-source.sh` for offline tagged-source regression checks in temporary Git repositories with a controlled Maven command. `RUN_REAL_MAVEN=1` additionally evaluates a fixture's effective coordinates using the locally cached Maven Help plugin, still offline. Releases build and test a fresh detached tagged worktree and recheck its pinned commit, clean state, and Maven coordinates before deployment; the workflow source checkout is left intact.
+
 The optional Snyk workflow explicitly skips scans when the repository's `SNYK_TOKEN` secret is absent; a skipped scan is not a clean security result. When configured, the CLI runs on the runner's configured JDK rather than inside a Maven action container, and vulnerability findings or scan errors fail the scan step. The separate Snyk GitHub-app status is independent of this workflow.
 
 == Acknowledgments

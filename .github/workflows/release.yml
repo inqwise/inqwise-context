@@ -52,6 +52,7 @@ jobs:
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
       - name: Build and test
+        if: github.event_name == 'workflow_dispatch'
         run: mvn -B -ntp clean verify
 
       - name: Maven Release (Manual Trigger)
@@ -71,14 +72,35 @@ jobs:
           MAVEN_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
 
+      - name: Create detached release source
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        run: |
+          COMMIT=$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")
+          git worktree add --detach "$RUNNER_TEMP/inqwise-release-source" "$COMMIT"
+
+      - name: Verify tagged release source
+        id: source
+        working-directory: ${{ runner.temp }}/inqwise-release-source
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/verify-release-source.sh"
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+
+      - name: Build and test tagged release
+        working-directory: ${{ runner.temp }}/inqwise-release-source
+        run: mvn -B -ntp clean verify
+
       - name: Deploy to Maven Central
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+        working-directory: ${{ runner.temp }}/inqwise-release-source
         run: |
-          git checkout -f "$RELEASE_TAG"
+          bash "$GITHUB_WORKSPACE/.github/scripts/verify-release-source.sh"
           mvn clean deploy -P sonatype-oss-release -Dmaven.deploy.skip=true -DskipTests "-DreleaseVersion=$RELEASE_VERSION"
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
           RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+          RELEASE_COMMIT: ${{ steps.source.outputs.release_commit }}
           MAVEN_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
@@ -88,6 +110,7 @@ jobs:
         run: bash .github/scripts/prepare-release-assets.sh
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
+          RELEASE_BUILD_DIR: ${{ runner.temp }}/inqwise-release-source/target
 
       - name: Create GitHub Release (Manual Trigger)
         if: github.event_name == 'workflow_dispatch'
@@ -95,6 +118,7 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.release_tag }}
           name: Release ${{ steps.version.outputs.release_tag }}
+          target_commitish: ${{ steps.source.outputs.release_commit }}
           body: |
             🚀 **Release ${{ steps.version.outputs.release_tag }}**
 
@@ -113,6 +137,7 @@ jobs:
             - Javadoc JAR
             - Detached GPG signatures
             - All artifacts GPG signed
+            - Source commit: `${{ steps.source.outputs.release_commit }}`
 
             ## 🔗 Links
             - [Maven Central](https://central.sonatype.com/artifact/com.inqwise/inqwise-context/${{ steps.version.outputs.release_version }})
@@ -137,6 +162,7 @@ jobs:
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.release_tag }}
           files: |
             release-assets/inqwise-context-${{ steps.version.outputs.release_version }}.jar
             release-assets/inqwise-context-${{ steps.version.outputs.release_version }}.jar.asc
