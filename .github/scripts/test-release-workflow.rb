@@ -61,6 +61,8 @@ def validate(workflow)
     errors << 'fail-closed source checks' if step['continue-on-error']
   end
   errors << 'initial source guard' unless source['run'] == GUARD
+  event_pin = "${{ github.event_name == 'release' && github.sha || '' }}"
+  errors << 'published release event commit pin' unless source.fetch('env')['RELEASE_COMMIT'] == event_pin
   errors << 'tagged tests' unless build['run'] == 'mvn -B -ntp clean verify'
   errors << 'pre-deploy source guard' unless deploy.fetch('run').lines.first.strip == GUARD
   errors << 'verified commit pin' unless deploy.fetch('env')['RELEASE_COMMIT'] == COMMIT
@@ -125,6 +127,9 @@ nested = [
   ['Verify release credentials', 'env', 'GPG_PRIVATE_KEY', 'wrong'],
   ['Create detached release source', 'env', 'RELEASE_TAG', 'wrong'],
   ['Verify tagged release source', 'env', 'RELEASE_VERSION', 'wrong'],
+  ['Verify tagged release source', 'env', 'RELEASE_COMMIT', ''],
+  ['Verify tagged release source', 'env', 'RELEASE_COMMIT', '${{ github.sha }}'],
+  ['Verify tagged release source', 'env', 'RELEASE_COMMIT', '${{ github.event.release.target_commitish }}'],
   ['Deploy to Maven Central', 'env', 'RELEASE_COMMIT', 'HEAD'],
   ['Deploy to Maven Central', 'env', 'RELEASE_TAG', 'wrong'],
   ['Prepare Release Assets', 'env', 'RELEASE_BUILD_DIR', 'target'],

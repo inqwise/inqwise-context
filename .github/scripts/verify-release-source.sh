@@ -16,7 +16,7 @@ prefix=$(git rev-parse --show-prefix)
 }
 commit=$(git rev-parse --verify "refs/tags/$tag^{commit}")
 if [[ -n "${RELEASE_COMMIT:-}" && "$commit" != "$RELEASE_COMMIT" ]]; then
-  printf '%s\n' '::error::Release tag changed after source verification' >&2
+  printf '%s\n' '::error::Release tag does not match the pinned release commit' >&2
   exit 1
 fi
 

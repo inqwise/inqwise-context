@@ -98,6 +98,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
           RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+          RELEASE_COMMIT: ${{ github.event_name == 'release' && github.sha || '' }}
 
       - name: Build and test tagged release
         working-directory: ${{ runner.temp }}/inqwise-release-source

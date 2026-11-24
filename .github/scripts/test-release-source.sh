@@ -88,7 +88,7 @@ new_case() {
 
 accept() {
   if ! (cd "$worktree" && bash "$guard") > "$directory/stdout" 2> "$directory/errors"; then
-    cat "$directory/errors" >&2; exit 1
+    cat "$directory/stdout" "$directory/errors" >&2; exit 1
   fi
   [[ "$(< "$GITHUB_OUTPUT")" == "release_commit=$commit" ]] || exit 1
   count=$((count + 1))
@@ -108,12 +108,22 @@ reject() {
 new_case; accept
 new_case; RELEASE_TAG=1.2.0 accept
 new_case; RELEASE_COMMIT="$commit" accept
+new_case; RELEASE_COMMIT='' accept
+new_case; RELEASE_TAG=1.2.0 RELEASE_COMMIT="$commit" accept
 new_case; RELEASE_COMMIT="$other" reject no
+for pin in HEAD refs/tags/v1.2.0 "$tag_object" "${commit:0:12}"; do
+  new_case; RELEASE_COMMIT="$pin" reject no
+done
 new_case
 git -C "$repository" update-ref refs/tags/v1.2.0 "$other"
 git -C "$worktree" checkout --quiet --detach "$other"
 RELEASE_COMMIT="$commit" reject no
 git -C "$repository" update-ref refs/tags/v1.2.0 "$tag_object"
+new_case
+git -C "$repository" update-ref refs/tags/1.2.0 "$other"
+git -C "$worktree" checkout --quiet --detach "$other"
+RELEASE_TAG=1.2.0 RELEASE_COMMIT="$commit" reject no
+git -C "$repository" update-ref refs/tags/1.2.0 "$commit"
 new_case; mkdir "$worktree/target"; printf '%s\n' build > "$worktree/target/ignored.log"; accept
 new_case; git -C "$worktree" checkout --quiet --detach "$other"; reject no
 new_case; RELEASE_VERSION=9.9.9 RELEASE_TAG=v9.9.9 reject no
