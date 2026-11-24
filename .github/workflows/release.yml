@@ -10,6 +10,11 @@ on:
         required: true
         type: string
 
+concurrency:
+  group: inqwise-context-release
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   release:
     name: Release to Maven Central

@@ -14,6 +14,12 @@ GUARD = 'bash "$GITHUB_WORKSPACE/.github/scripts/verify-release-source.sh"'
 def validate(workflow)
   steps = workflow.fetch('jobs').fetch('release').fetch('steps')
   errors = []
+  concurrency = workflow['concurrency']
+  expected_concurrency = {
+    'group' => 'inqwise-context-release', 'cancel-in-progress' => false, 'queue' => 'max'
+  }
+  errors << 'serialized non-cancelling release queue' unless concurrency == expected_concurrency
+  errors << 'no job-level concurrency override' if workflow.fetch('jobs').fetch('release').key?('concurrency')
   find = lambda do |name|
     matches = steps.select { |step| step['name'] == name }
     raise "Expected exactly one #{name} step" unless matches.length == 1
@@ -124,4 +130,19 @@ checks.each_with_index do |mutate, index|
   mutate.call(candidate.fetch('jobs').fetch('release').fetch('steps'))
   abort "Broken workflow mutation #{index + 1} was accepted" if validate(candidate).empty?
 end
-puts "Passed release workflow contract and #{checks.length} rejected wiring mutations"
+queue_mutations = [
+  ->(workflow) { workflow.delete('concurrency') },
+  ->(workflow) { workflow['concurrency'] = 'inqwise-context-release' },
+  ->(workflow) { workflow['concurrency']['group'] = '${{ github.ref }}' },
+  ->(workflow) { workflow['concurrency']['cancel-in-progress'] = true },
+  ->(workflow) { workflow['concurrency'].delete('cancel-in-progress') },
+  ->(workflow) { workflow['concurrency']['queue'] = 'single' },
+  ->(workflow) { workflow['concurrency'].delete('queue') },
+  ->(workflow) { workflow.fetch('jobs').fetch('release')['concurrency'] = 'another-group' }
+]
+queue_mutations.each_with_index do |mutate, index|
+  candidate = Marshal.load(Marshal.dump(RELEASE))
+  mutate.call(candidate)
+  abort "Broken release queue mutation #{index + 1} was accepted" if validate(candidate).empty?
+end
+puts "Passed release workflow contract and #{checks.length + queue_mutations.length} rejected wiring mutations"

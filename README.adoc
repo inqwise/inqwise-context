@@ -260,6 +260,8 @@ Run `bash .github/scripts/test-release-source.sh` for offline tagged-source regr
 
 Run `ruby .github/scripts/test-release-workflow.rb` to validate release step ordering, tagged-source checks, commit bindings, and exact upload paths. This offline check uses Ruby's standard library, rejects deliberately broken workflow variants, and never executes workflow commands.
 
+Manual and published-release runs share one non-cancelling release concurrency group, so tagging and publishing cannot overlap within this workflow. The https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency[GitHub Actions release queue] allows up to 100 pending runs instead of replacing an earlier pending release. This does not deduplicate repeated release requests or make failed publications safe to retry automatically.
+
 The optional Snyk workflow explicitly skips scans when the repository's `SNYK_TOKEN` secret is absent; a skipped scan is not a clean security result. When configured, the CLI runs on the runner's configured JDK rather than inside a Maven action container, and vulnerability findings or scan errors fail the scan step. The separate Snyk GitHub-app status is independent of this workflow.
 
 == Acknowledgments
