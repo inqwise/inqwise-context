@@ -36,6 +36,13 @@ jobs:
           RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
         run: bash .github/scripts/resolve-release-version.sh
 
+      - name: Verify release credentials
+        run: bash .github/scripts/verify-release-credentials.sh
+        env:
+          MAVEN_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:

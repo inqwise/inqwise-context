@@ -26,6 +26,10 @@ def validate(workflow)
     matches.first
   end
   resolve = find.call('Resolve release version')
+  credentials = find.call('Verify release credentials')
+  setup = find.call('Set up JDK 21')
+  configure = find.call('Configure Git user')
+  prepare = find.call('Maven Release (Manual Trigger)')
   create = find.call('Create detached release source')
   source = find.call('Verify tagged release source')
   build = find.call('Build and test tagged release')
@@ -33,8 +37,17 @@ def validate(workflow)
   assets = find.call('Prepare Release Assets')
   manual = find.call('Create GitHub Release (Manual Trigger)')
   existing = find.call('Upload Release Assets (Existing Release)')
-  ordered = [resolve, create, source, build, deploy, assets, manual, existing]
+  ordered = [resolve, credentials, setup, configure, prepare, create, source, build, deploy, assets, manual, existing]
   errors << 'release step order' unless ordered.map { |step| steps.index(step) }.each_cons(2).all? { |a, b| a < b }
+  errors << 'credential preflight command' unless credentials['run'] == 'bash .github/scripts/verify-release-credentials.sh'
+  errors << 'unconditional credential preflight' if credentials.key?('if')
+  errors << 'fail-closed credential preflight' if credentials['continue-on-error']
+  expected_credentials = {
+    'MAVEN_USERNAME' => '${{ secrets.SONATYPE_USERNAME }}',
+    'MAVEN_PASSWORD' => '${{ secrets.SONATYPE_PASSWORD }}',
+    'GPG_PRIVATE_KEY' => '${{ secrets.GPG_PRIVATE_KEY }}'
+  }
+  errors << 'credential secret bindings' unless credentials['env'] == expected_credentials
   errors << 'resolver output identity' unless resolve['id'] == 'version'
   errors << 'source output identity' unless source['id'] == 'source'
   errors << 'detached tagged worktree' unless create['run'] == <<~SH
@@ -81,7 +94,7 @@ end
 errors = validate(RELEASE)
 abort "Release workflow contract failed: #{errors.join(', ')}" unless errors.empty?
 ci_steps = CI.fetch('jobs').fetch('code-quality').fetch('steps')
-%w[version source assets].each do |name|
+%w[version credentials source assets].each do |name|
   command = "bash .github/scripts/test-release-#{name}.sh"
   abort "Missing CI regression command: #{command}" unless ci_steps.any? { |step| step['run'] == command && !step['if'] && !step['continue-on-error'] }
 end
@@ -91,6 +104,9 @@ abort 'Missing workflow regression CI step' unless ci_steps.any? { |step| step['
 # Mutations prove the assertions reject broken wiring, not just valid YAML.
 mutations = [
   ['Resolve release version', 'id', 'wrong'],
+  ['Verify release credentials', 'run', 'true'],
+  ['Verify release credentials', 'if', 'false'],
+  ['Verify release credentials', 'continue-on-error', true],
   ['Verify tagged release source', 'id', 'wrong'],
   ['Create detached release source', 'run', 'git checkout "$RELEASE_TAG"'],
   ['Verify tagged release source', 'working-directory', '.'],
@@ -104,6 +120,9 @@ mutations = [
   ['Prepare Release Assets', 'run', 'true']
 ]
 nested = [
+  ['Verify release credentials', 'env', 'MAVEN_USERNAME', 'wrong'],
+  ['Verify release credentials', 'env', 'MAVEN_PASSWORD', 'wrong'],
+  ['Verify release credentials', 'env', 'GPG_PRIVATE_KEY', 'wrong'],
   ['Create detached release source', 'env', 'RELEASE_TAG', 'wrong'],
   ['Verify tagged release source', 'env', 'RELEASE_VERSION', 'wrong'],
   ['Deploy to Maven Central', 'env', 'RELEASE_COMMIT', 'HEAD'],
@@ -123,6 +142,11 @@ checks.concat(nested.map do |name, field, key, value|
   ->(steps) { steps.find { |step| step['name'] == name }.fetch(field)[key] = value }
 end)
 checks << ->(steps) { steps.reverse! }
+checks << lambda do |steps|
+  preflight = steps.find { |step| step['name'] == 'Verify release credentials' }
+  steps.delete(preflight)
+  steps << preflight
+end
 checks << ->(steps) { steps.first['run'] = 'echo ${{ inputs.version }}' }
 checks << ->(steps) { steps.first['run'] = 'if broken' }
 checks.each_with_index do |mutate, index|

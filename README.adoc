@@ -254,6 +254,8 @@ JaCoCo generates HTML and XML reports under `target/site/jacoco`.
 
 Run `bash .github/scripts/test-release-version.sh` for offline release-input regression checks; this does not create tags, push commits, or publish artifacts. Manual releases accept a non-snapshot version without a `v` prefix, while published-release events preserve their exact prefixed or unprefixed tag.
 
+Run `bash .github/scripts/test-release-credentials.sh` for offline credential-preflight checks using synthetic secrets only. Releases reject missing or blank Maven credentials and signing keys before key import or manual release preparation can push commits and tags. This checks configuration presence, not credential authentication or key validity, and does not require a passphrase for an unprotected signing key. Credential contents are never printed by the preflight.
+
 Run `bash .github/scripts/test-release-assets.sh` to check release-asset collection with the JDK's `jar` tool and GnuPG. It creates and removes an isolated temporary test keyring, without accessing your signing keys or publishing artifacts. Release uploads require the three expected JARs and their verified detached signatures from the fresh build, not Maven's cache.
 
 Run `bash .github/scripts/test-release-source.sh` for offline tagged-source regression checks in temporary Git repositories with a controlled Maven command. `RUN_REAL_MAVEN=1` additionally evaluates a fixture's effective coordinates using the locally cached Maven Help plugin, still offline. Releases build and test a fresh detached tagged worktree and recheck its pinned commit, clean state, and Maven coordinates before deployment; the workflow source checkout is left intact.
