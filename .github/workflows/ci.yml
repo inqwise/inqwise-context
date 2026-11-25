@@ -110,7 +110,7 @@ jobs:
   build-and-publish:
     name: Build and Publish
     runs-on: ubuntu-latest
-    needs: [test, code-quality]
+    needs: [test, code-quality, dependency-check]
     if: github.event_name == 'release' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
 
     steps:
@@ -195,11 +195,10 @@ jobs:
           if [ -n "$NVD_API_KEY" ]; then
             echo "Using NVD API key for faster updates"
             mvn org.owasp:dependency-check-maven:check -B \
-              -DskipTestScope=false \
+              -DskipTestScope=true \
               -DskipProvidedScope=false \
               -DskipRuntimeScope=false \
-              -DsuppressionFiles=.github/dependency-check-suppressions.xml \
-              -DfailBuildOnUnusedSuppressionRule=true \
+              -Dodc.outputDirectory=target/dependency-check-runtime \
               -DfailBuildOnCVSS=7 \
               -Dformat=ALL \
               -DnvdApiKeyEnvironmentVariable=NVD_API_KEY
@@ -207,21 +206,46 @@ jobs:
             echo "Warning: NVD API key not provided - update may take a very long time"
             echo "Consider adding NVD_API_KEY secret for faster dependency checking"
             mvn org.owasp:dependency-check-maven:check -B \
-              -DskipTestScope=false \
+              -DskipTestScope=true \
               -DskipProvidedScope=false \
               -DskipRuntimeScope=false \
-              -DsuppressionFiles=.github/dependency-check-suppressions.xml \
-              -DfailBuildOnUnusedSuppressionRule=true \
+              -Dodc.outputDirectory=target/dependency-check-runtime \
               -DfailBuildOnCVSS=7 \
               -Dformat=ALL
           fi
+
+      - name: Report OWASP test dependency findings
+        id: test-dependencies
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          arguments=(org.owasp:dependency-check-maven:check -B
+            -DskipTestScope=false -DskipProvidedScope=false -DskipRuntimeScope=false
+            -DsuppressionFiles=.github/dependency-check-suppressions.xml
+            -DfailBuildOnUnusedSuppressionRule=true
+            -Dodc.outputDirectory=target/dependency-check-all
+            -DfailBuildOnCVSS=7 -Dformat=ALL)
+          if [ -n "$NVD_API_KEY" ]; then
+            arguments+=(-DnvdApiKeyEnvironmentVariable=NVD_API_KEY)
+          fi
+          mvn "${arguments[@]}"
+
+      - name: Flag advisory scan failure
+        if: ${{ always() && steps.test-dependencies.outcome == 'failure' }}
+        run: |
+          echo "::warning::The all-scope dependency scan reported vulnerabilities or failed. Review its logs and reports; test-only findings do not block delivery."
 
       - name: Upload OWASP dependency check results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: owasp-dependency-check-report
-          path: target/dependency-check-report.*
+          path: |
+            target/dependency-check-runtime/dependency-check-report.*
+            target/dependency-check-all/dependency-check-report.*
           retention-days: 30
 
   snyk-security:

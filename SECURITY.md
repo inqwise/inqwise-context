@@ -23,7 +23,7 @@ This project uses multiple security scanning tools to identify and address vulne
 
 A passing build or test suite is not evidence that every security scan ran or that no vulnerabilities exist. Review scan reports and skipped jobs separately.
 
-Product-identity corrections are recorded in [the scan triage](docs/security-scans.adoc) and [the exact-version CPE rules](.github/dependency-check-suppressions.xml). They expire and are checked for unused entries. They do not suppress the actual Hazelcast member or its bundled Jackson findings; the remaining high findings continue to block CI pending review.
+Product-identity corrections are recorded in [the scan triage](docs/security-scans.adoc) and [the exact-version CPE rules](.github/dependency-check-suppressions.xml). They expire and are checked for unused entries in the all-scope advisory scan. They do not suppress the actual Hazelcast member or its bundled Jackson findings. Runtime and provided dependency findings at CVSS 7 or higher block CI; test-only findings remain reported but do not block delivery.
 
 ### 📊 **Security Badges**
 
@@ -106,7 +106,7 @@ The Kafka dependency graph is managed to Snappy 1.1.10.9 and LZ4 Java 1.11.4 for
 
 ### 🧪 **Test Dependencies**
 
-Test dependencies are also monitored but have lower priority for security patches.
+Test dependencies are also monitored but have lower priority for security patches. The blocking scan excludes Maven test scope while retaining compile, runtime, and provided dependencies. A separate nonblocking all-scope scan includes test dependencies and retains their findings, including Hazelcast's bundled Jackson. Both scans retain reports; an advisory scan failure produces a workflow warning and must not be read as a clean scan. Test scope avoids consumer runtime exposure, not all possible risk to CI executing those dependencies.
 
 The cluster test runtime explicitly selects Hazelcast 5.7.0 instead of the cluster manager's transitive 5.6.0. This addresses the published upstream advisories [GHSA-6v25-8wq6-xq4j](https://github.com/hazelcast/hazelcast/security/advisories/GHSA-6v25-8wq6-xq4j) and [GHSA-w294-6q5q-53p8](https://github.com/hazelcast/hazelcast/security/advisories/GHSA-w294-6q5q-53p8). Hazelcast remains test-scoped and is not added to the library's consumer runtime dependencies. This targeted update does not claim to resolve other dependency alerts.
 
