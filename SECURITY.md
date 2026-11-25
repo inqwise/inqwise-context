@@ -23,6 +23,8 @@ This project uses multiple security scanning tools to identify and address vulne
 
 A passing build or test suite is not evidence that every security scan ran or that no vulnerabilities exist. Review scan reports and skipped jobs separately.
 
+Product-identity corrections are recorded in [the scan triage](docs/security-scans.adoc) and [the exact-version CPE rules](.github/dependency-check-suppressions.xml). They expire and are checked for unused entries. They do not suppress the actual Hazelcast member or its bundled Jackson findings; the remaining high findings continue to block CI pending review.
+
 ### 📊 **Security Badges**
 
 - [![Known Vulnerabilities](https://snyk.io/test/github/inqwise/inqwise-context/badge.svg)](https://snyk.io/test/github/inqwise/inqwise-context)

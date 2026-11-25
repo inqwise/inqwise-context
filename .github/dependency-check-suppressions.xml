@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.4.xsd">
+    <suppress until="2027-02-23Z">
+        <notes><![CDATA[
+Reviewed 2026-11-25. This Java API client is not the Elasticsearch server.
+Its model classes do not implement server ML execution, PKI realms, or shard authorization.
+Remove only the erroneous server product identities, not package-specific vulnerabilities.
+https://www.elastic.co/docs/reference/elasticsearch/clients/java
+https://discuss.elastic.co/t/elasticsearch-8-19-20-9-4-5-9-5-1-security-update-esa-2026-114/390087
+        ]]></notes>
+        <packageUrl caseSensitive="true">pkg:maven/co.elastic.clients/elasticsearch-java@8.15.3</packageUrl>
+        <cpe regex="true" caseSensitive="true">\Acpe:/a:elastic:elasticsearch:8\.15\.3\z</cpe>
+        <cpe regex="true" caseSensitive="true">\Acpe:/a:elasticsearch:elasticsearch:8\.15\.3\z</cpe>
+    </suppress>
+    <suppress until="2027-02-23Z">
+        <notes><![CDATA[
+Reviewed 2026-11-25. This low-level HTTP client is not the Elasticsearch server.
+It delegates requests to a separately deployed server; server-side security remains required.
+https://www.elastic.co/docs/reference/elasticsearch/clients/java
+https://discuss.elastic.co/t/elasticsearch-8-19-8-9-1-8-and-9-2-2-security-update-esa-2025-27/384063
+        ]]></notes>
+        <packageUrl caseSensitive="true">pkg:maven/org.elasticsearch.client/elasticsearch-rest-client@8.15.3</packageUrl>
+        <cpe regex="true" caseSensitive="true">\Acpe:/a:elastic:elasticsearch:8\.15\.3\z</cpe>
+        <cpe regex="true" caseSensitive="true">\Acpe:/a:elasticsearch:elasticsearch:8\.15\.3\z</cpe>
+    </suppress>
+    <suppress until="2027-02-23Z">
+        <notes><![CDATA[
+Reviewed 2026-11-25. Vert.x 5.2.3 is the adapter version, not a Hazelcast member version.
+This JAR contains io.vertx.spi.cluster.hazelcast integration classes, not com.hazelcast member classes.
+The separate com.hazelcast:hazelcast dependency and its shaded libraries remain fully scanned.
+https://github.com/vert-x3/vertx-hazelcast
+https://github.com/hazelcast/hazelcast/security/advisories/GHSA-xh6m-7cr7-xx66
+        ]]></notes>
+        <packageUrl caseSensitive="true">pkg:maven/io.vertx/vertx-hazelcast@5.2.3</packageUrl>
+        <cpe regex="true" caseSensitive="true">\Acpe:/a:hazelcast:hazelcast:5\.2\.3\z</cpe>
+    </suppress>
+</suppressions>

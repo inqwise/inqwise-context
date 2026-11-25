@@ -2,14 +2,27 @@
 require 'json'
 require 'open3'
 require 'rbconfig'
+require 'rexml/document'
 require 'tmpdir'
 require 'yaml'
 
 ROOT = File.expand_path('../..', __dir__)
 WORKFLOW = YAML.safe_load(File.read(File.join(ROOT, '.github/workflows/ci.yml')))
+POM = File.read(File.join(ROOT, 'pom.xml'))
 SCAN_NAME = 'Run OWASP dependency check'
 REQUIRED_ARGS = %w[org.owasp:dependency-check-maven:check -B -DskipTestScope=false
-                   -DskipProvidedScope=false -DskipRuntimeScope=false -DfailBuildOnCVSS=7 -Dformat=ALL].freeze
+                   -DskipProvidedScope=false -DskipRuntimeScope=false
+                   -DsuppressionFiles=.github/dependency-check-suppressions.xml
+                   -DfailBuildOnUnusedSuppressionRule=true -DfailBuildOnCVSS=7 -Dformat=ALL].freeze
+
+def scanner_version_pinned?(source)
+  root = REXML::Document.new(source).root
+  plugins = REXML::XPath.match(root, 'build/pluginManagement/plugins/plugin')
+  matches = plugins.select { |entry| entry.elements['groupId']&.text == 'org.owasp' && entry.elements['artifactId']&.text == 'dependency-check-maven' }
+  plugin = matches.first
+  matches.length == 1 && root.elements['properties/dependency-check.plugin.version']&.text == '13.0.0' &&
+    plugin&.elements&.[]('version')&.text == '${dependency-check.plugin.version}'
+end
 
 def validate(workflow)
   errors = []
@@ -34,6 +47,18 @@ def validate(workflow)
   command = 'ruby .github/scripts/test-security-workflow.rb'
   errors << 'unconditional CI contract check' if quality.key?('if') || quality['continue-on-error'] ||
     !quality.fetch('steps').any? { |step| step['run'] == command && !step.key?('if') && !step['continue-on-error'] }
+  identity_command = 'ruby .github/scripts/test-dependency-check-suppressions.rb'
+  errors << 'unconditional identity-correction check' unless quality.fetch('steps').any? do |step|
+    step['run'] == identity_command && !step.key?('if') && !step['continue-on-error']
+  end
+  quality_steps = quality.fetch('steps')
+  engine_steps = quality_steps.select { |step| step['run'] == 'bash .github/scripts/test-dependency-check-engine.sh' }
+  engine = engine_steps.first
+  setup_index = quality_steps.index { |step| step['name'] == 'Set up JDK 21' }
+  cache_index = quality_steps.index { |step| step['name'] == 'Cache Maven dependencies' }
+  errors << 'required real-engine check after JDK and cache setup' unless engine_steps.length == 1 &&
+    !engine.key?('if') && !engine['continue-on-error'] && setup_index && cache_index &&
+    quality_steps.index(engine) > setup_index && quality_steps.index(engine) > cache_index
   return errors unless errors.empty?
 
   Dir.mktmpdir('security-workflow-test.') do |directory|
@@ -65,10 +90,15 @@ def validate(workflow)
   errors
 end
 
+abort 'Scanner version must match the reviewed 13.0.0 engine' unless scanner_version_pinned?(POM)
+abort 'Unmanaged scanner version was accepted' if scanner_version_pinned?(POM.sub('<version>${dependency-check.plugin.version}</version>', ''))
+abort 'Different scanner engine was accepted' if scanner_version_pinned?(POM.sub('<dependency-check.plugin.version>13.0.0</dependency-check.plugin.version>', '<dependency-check.plugin.version>13.1.0</dependency-check.plugin.version>'))
 errors = validate(WORKFLOW)
 abort "Security workflow contract failed: #{errors.join(', ')}" unless errors.empty?
 mutations = []
-%w[-DskipTestScope=false -DskipProvidedScope=false -DskipRuntimeScope=false -DfailBuildOnCVSS=7].each do |flag|
+%w[-DskipTestScope=false -DskipProvidedScope=false -DskipRuntimeScope=false
+   -DsuppressionFiles=.github/dependency-check-suppressions.xml
+   -DfailBuildOnUnusedSuppressionRule=true -DfailBuildOnCVSS=7].each do |flag|
   [:index, :rindex].each do |position|
     mutations << lambda do |workflow|
       scan = workflow.fetch('jobs').fetch('dependency-check').fetch('steps').find { |step| step['name'] == SCAN_NAME }
@@ -95,9 +125,34 @@ end
 mutations << lambda do |workflow|
   workflow['jobs']['dependency-check']['steps'].find { |step| step['name'] == SCAN_NAME }.delete('shell')
 end
+mutations << lambda do |workflow|
+  step = workflow['jobs']['code-quality']['steps'].find { |entry| entry['run'] == 'ruby .github/scripts/test-dependency-check-suppressions.rb' }
+  step['if'] = 'false'
+end
+mutations << lambda do |workflow|
+  workflow['jobs']['code-quality']['steps'].reject! { |step| step['run'] == 'ruby .github/scripts/test-dependency-check-suppressions.rb' }
+end
+mutations << lambda do |workflow|
+  workflow['jobs']['code-quality']['steps'].find { |step| step['run'] == 'bash .github/scripts/test-dependency-check-engine.sh' }['continue-on-error'] = true
+end
+mutations << lambda do |workflow|
+  workflow['jobs']['code-quality']['steps'].find { |step| step['run'] == 'bash .github/scripts/test-dependency-check-engine.sh' }['if'] = 'false'
+end
+mutations << lambda do |workflow|
+  workflow['jobs']['code-quality']['steps'].reject! { |step| step['run'] == 'bash .github/scripts/test-dependency-check-engine.sh' }
+end
+mutations << lambda do |workflow|
+  steps = workflow['jobs']['code-quality']['steps']
+  engine = steps.find { |step| step['run'] == 'bash .github/scripts/test-dependency-check-engine.sh' }
+  steps.delete(engine)
+  steps.unshift(engine)
+end
 mutations.each_with_index do |mutate, index|
   candidate = Marshal.load(Marshal.dump(WORKFLOW))
   mutate.call(candidate)
   abort "Broken security workflow mutation #{index + 1} was accepted" if validate(candidate).empty?
 end
 puts "Passed 4 synthetic scanner scenarios and #{mutations.length} rejected security workflow mutations"
+stdout, stderr, status = Open3.capture3(RbConfig.ruby, File.join(__dir__, 'test-dependency-check-engine-wrapper.rb'))
+abort "Engine-wrapper contract failed:\n#{stdout}#{stderr}" unless status.success?
+puts stdout

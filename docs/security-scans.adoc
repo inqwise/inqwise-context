@@ -1,0 +1,44 @@
+= Dependency Scan Triage
+
+Reviewed on 2026-11-25 against the https://github.com/inqwise/inqwise-context/actions/runs/45609130362/attempts/2[PR #39 CI rerun].
+The initial failure was a Maven Central HTTP 429 response. The rerun completed NVD initialization and analysis with Dependency-Check 13.0.0, then failed the unchanged CVSS threshold of 7.
+
+== Product Identity Corrections
+
+The link:../.github/dependency-check-suppressions.xml[reviewed rules] remove only these incorrect CPE identities:
+
+[cols="2,2",options="header"]
+|===
+|Exact Maven package |Incorrect product identity
+|`co.elastic.clients:elasticsearch-java:8.15.3` |Elasticsearch server 8.15.3
+|`org.elasticsearch.client:elasticsearch-rest-client:8.15.3` |Elasticsearch server 8.15.3
+|`io.vertx:vertx-hazelcast:5.2.3` |Hazelcast member 5.2.3
+|===
+
+Elastic's https://www.elastic.co/docs/reference/elasticsearch/clients/java[Java client documentation] distinguishes client requests and HTTP transport from the server. The reported server findings concern functionality such as https://discuss.elastic.co/t/elasticsearch-8-19-20-9-4-5-9-5-1-security-update-esa-2026-114/390087[trained-model execution] and https://discuss.elastic.co/t/elasticsearch-8-19-8-9-1-8-and-9-2-2-security-update-esa-2025-27/384063[PKI realm authentication], not the client model/HTTP JARs. Separately deployed servers must still be patched.
+
+The Vert.x integration JAR contains `io.vertx.spi.cluster.hazelcast` classes, not Hazelcast member classes. Its version is not the version of the separate `com.hazelcast:hazelcast` binary. The https://github.com/hazelcast/hazelcast/security/advisories/GHSA-xh6m-7cr7-xx66[member-protocol advisory] is assessed against that separate binary, which remains scanned.
+
+Package URLs are literal and case-sensitive. The scanner normalizes report CPE 2.3 identifiers to CPE 2.2 URIs before matching; CPE expressions are therefore fully anchored, case-sensitive patterns for the exact normalized product and version, with escaped version dots and no wildcard matching. Version prefixes such as 8.15.30 do not match 8.15.3.
+
+These rules do not suppress CVEs, other packages, other versions, the actual Hazelcast member, or embedded Jackson. Rules expire on 2027-02-23 and unused rules fail the scan, requiring review when the dependency graph or product matching changes. The Maven scanner is managed at the reviewed 13.0.0 version instead of resolving a floating latest version.
+
+== Remaining Blocking Findings
+
+Hazelcast 5.7.0 contains relocated Jackson Databind 2.21.2 and 3.1.2 classes under `com.hazelcast.shaded`. These are real bundled components, not just unused POM entries. Their reported `CVE-2026-54512` and `CVE-2026-54513` findings remain visible and are not covered by the product identity rules.
+
+The https://github.com/hazelcast/hazelcast/issues/26597#issuecomment-4859599809[maintainer's preliminary assessment] says Hazelcast's shipped JSON paths do not use the polymorphic-typing pattern needed by those two high findings, but application jobs or extensions can still be exposed. That assessment is not treated as an automatic risk acceptance for this repository. Lower-severity findings were still under review in that assessment.
+
+The published Community Maven artifact remains 5.7.0. Ordinary Maven dependency management cannot replace relocated classes inside that JAR. A https://github.com/hazelcast/hazelcast/issues/26601[separate unrelocated Maven artifact] has been requested upstream but is not assumed available. No Enterprise dependency, third-party fork, repacked JAR, or Jackson CVE exception has been introduced. CI remains blocking pending a reviewed remediation or explicit risk decision.
+
+The earlier exact-version advisory query covered the resolved Maven graph. It did not inventory these shaded components; a zero-match result for that graph is not a security clearance for bundled code. The CI run also reported OSS Index disabled because credentials were absent, so no coverage from that analyzer is claimed.
+
+== Local Validation
+
+`ruby .github/scripts/test-dependency-check-suppressions.rb` checks the exact identities, unrelated-product and shaded-Jackson exclusions, expiry, and rejection of broadened rules. Setting `DEPENDENCY_CHECK_REPORT` to the downloaded JSON report additionally checks the five exact CPE matches and retention of both reported shaded Jackson components. This validates selectors against evidence; it is not a new vulnerability scan.
+
+Run `bash .github/scripts/test-dependency-check-engine.sh` to resolve the reviewed scanner SDK in a temporary Maven project and run the real parser and matcher. CI requires this step after JDK and Maven cache setup. It can download SDK artifacts, but it does not initialize an NVD database or call a vulnerability API. `DEPENDENCY_CHECK_ENGINE_OFFLINE=1` requires cached artifacts; `JAVA_HOME` selects the JDK. SDK dependencies remain outside the library and application-test classpaths, and temporary project files are removed on exit. The security-workflow contract tests also exercise resolver failure and missing classpath output in both online and offline modes, using a fake Maven executable without network access. They verify failure propagation, SDK version isolation, paths containing spaces, and scratch-directory cleanup.
+
+The lower-level Ruby checker also accepts `DEPENDENCY_CHECK_ENGINE_CLASSPATH` when the SDK classpath is already resolved. With `DEPENDENCY_CHECK_REPORT` set to the downloaded report, real-engine validation exercises 48 identity cases: five corrections, 43 retained identities, preserved independent vulnerability findings, and no unused rules. It also groups the fixtures into 34 packages, including all three reviewed packages with both corrected and retained identities, to verify that a correction leaves other identities and independent findings intact. The default offline fixtures exercise 18 identity cases and 11 grouped packages without requiring a downloaded report. Engine verification caught the initial mismatch between report CPE strings and the engine's normalization behavior; XML schema and selector-model checks alone did not catch it.
+
+`ruby .github/scripts/test-security-workflow.rb` checks both NVD-key paths, report retention, scope inclusion, the CVSS threshold, required rule validation, and fail-closed scanner behavior using a synthetic executable. Actual scanner results must still come from a completed scan with vulnerability data.
