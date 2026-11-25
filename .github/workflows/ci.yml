@@ -76,6 +76,9 @@ jobs:
       - name: Test release workflow contracts
         run: ruby .github/scripts/test-release-workflow.rb
 
+      - name: Test security workflow contracts
+        run: ruby .github/scripts/test-security-workflow.rb
+
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
@@ -179,19 +182,26 @@ jobs:
           restore-keys: ${{ runner.os }}-m2
 
       - name: Run OWASP dependency check
+        shell: bash
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: |
           if [ -n "$NVD_API_KEY" ]; then
             echo "Using NVD API key for faster updates"
             mvn org.owasp:dependency-check-maven:check -B \
+              -DskipTestScope=false \
+              -DskipProvidedScope=false \
+              -DskipRuntimeScope=false \
               -DfailBuildOnCVSS=7 \
               -Dformat=ALL \
-              -DnvdApiKey="$NVD_API_KEY"
+              -DnvdApiKeyEnvironmentVariable=NVD_API_KEY
           else
             echo "Warning: NVD API key not provided - update may take a very long time"
             echo "Consider adding NVD_API_KEY secret for faster dependency checking"
             mvn org.owasp:dependency-check-maven:check -B \
+              -DskipTestScope=false \
+              -DskipProvidedScope=false \
+              -DskipRuntimeScope=false \
               -DfailBuildOnCVSS=7 \
               -Dformat=ALL
           fi
