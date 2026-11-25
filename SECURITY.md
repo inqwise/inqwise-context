@@ -17,11 +17,13 @@ This project uses multiple security scanning tools to identify and address vulne
 ### 🔍 **Automated Security Scans**
 
 - **Snyk**: Dependency scanning is configured in [the dedicated workflow](.github/workflows/snyk.yml). Scans are skipped when `SNYK_TOKEN` is not configured.
-- **OWASP Dependency Check**: [The CI workflow](.github/workflows/ci.yml) runs a dependency check with a configured CVSS failure threshold of 7.
+- **OWASP Dependency Check**: [The CI workflow](.github/workflows/ci.yml) explicitly includes test, provided, and runtime dependencies, with a configured CVSS failure threshold of 7. Scanner errors fail the job; missing vulnerability data is not a clean scan result. When configured, the scanner reads the NVD key from its environment rather than from Maven command-line arguments.
 - **GitHub Dependabot**: [The repository configuration](.github/dependabot.yml) schedules weekly Maven and GitHub Actions update checks.
 - **GitHub CodeQL**: [The CodeQL workflow](.github/workflows/codeql.yml) configures source-code analysis.
 
 A passing build or test suite is not evidence that every security scan ran or that no vulnerabilities exist. Review scan reports and skipped jobs separately.
+
+Product-identity corrections are recorded in [the scan triage](docs/security-scans.adoc) and [the exact-version CPE rules](.github/dependency-check-suppressions.xml). They expire and are checked for unused entries in the all-scope advisory scan. They do not suppress the actual Hazelcast member or its bundled Jackson findings. Runtime and provided dependency findings at CVSS 7 or higher block CI; test-only findings remain reported but do not block delivery.
 
 ### 📊 **Security Badges**
 
@@ -100,9 +102,15 @@ The direct dependency scopes are defined in `pom.xml`:
 - Vert.x Codegen (optional build/code-generation dependency)
 - Vert.x WebClient and Kafka client (optional, provided scope; applications supply clients for the adapters they use)
 
+The Kafka dependency graph is managed to Snappy 1.1.10.9 and LZ4 Java 1.11.4 for the published upstream [Snappy](https://github.com/xerial/snappy-java/security/advisories/GHSA-gwq9-9ffj-mvrv) and [LZ4](https://github.com/yawkat/lz4-java/security/advisories/GHSA-mcr4-qmvw-px4g) fixes. This does not add either library as a required dependency. Applications supplying their own Kafka client must manage its compression dependencies themselves; this library's Maven dependency management is not automatically inherited by consumers. Brokerless tests exercise actual Kafka-compressed batches with payloads, headers, FlowId codec profiles, removals, and tombstones; they do not establish compatibility with deployed brokers.
+
 ### 🧪 **Test Dependencies**
 
-Test dependencies are also monitored but have lower priority for security patches.
+Test dependencies are also monitored but have lower priority for security patches. The blocking scan excludes Maven test scope while retaining compile, runtime, and provided dependencies. A separate nonblocking all-scope scan includes test dependencies and retains their findings, including Hazelcast's bundled Jackson. Both scans retain reports; an advisory scan failure produces a workflow warning and must not be read as a clean scan. Test scope avoids consumer runtime exposure, not all possible risk to CI executing those dependencies.
+
+The cluster test runtime explicitly selects Hazelcast 5.7.0 instead of the cluster manager's transitive 5.6.0. This addresses the published upstream advisories [GHSA-6v25-8wq6-xq4j](https://github.com/hazelcast/hazelcast/security/advisories/GHSA-6v25-8wq6-xq4j) and [GHSA-w294-6q5q-53p8](https://github.com/hazelcast/hazelcast/security/advisories/GHSA-w294-6q5q-53p8). Hazelcast remains test-scoped and is not added to the library's consumer runtime dependencies. This targeted update does not claim to resolve other dependency alerts.
+
+The Elasticsearch test client's OpenTelemetry modules are aligned with the 1.67.0 BOM for the published [tracestate parsing](https://github.com/open-telemetry/opentelemetry-java/security/advisories/GHSA-ccrj-gw8r-854m) and [baggage propagation](https://github.com/open-telemetry/opentelemetry-java/security/advisories/GHSA-rcgg-9c38-7xpx) fixes. OpenTelemetry remains test-scoped. Focused tests exercise trace round-trips and baggage bounds without installing global telemetry or adding a FlowId-to-OpenTelemetry bridge.
 
 ## Security Contact
 
@@ -123,4 +131,4 @@ Security updates are distributed through:
 
 ---
 
-*This security policy was last updated: November 24, 2026*
+*This security policy was last updated: November 25, 2026*
