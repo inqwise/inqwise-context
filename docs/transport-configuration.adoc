@@ -9,6 +9,7 @@ This is the detailed contract reference. For an installation walkthrough and sho
 == Transport Configuration
 
 `ContextTransportConfiguration` is an immutable allowlist for opt-in carrier transport and future protocol adapters. It contains metadata keys, never stored values or captured request contexts.
+
 Configuration resolution alone does not enable HTTP or Kafka propagation, and this configuration does not change the existing EventBus transport.
 
 [source,java]
@@ -24,6 +25,8 @@ ContextTransportConfiguration explicit = ContextTransportConfiguration.builder()
 ContextTransportConfiguration selected = ContextTransport.resolveConfiguration(explicit);
 // selected is the explicit instance; null selects the shared default instead.
 ----
+
+=== Default Configuration Provider
 
 An application can supply one `ContextTransportConfigurationProvider`:
 
@@ -49,11 +52,19 @@ Register it in `META-INF/services/com.inqwise.context.spi.ContextTransportConfig
 example.ApplicationTransportConfiguration
 ----
 
+=== Resolution And Failures
+
 Precedence is explicit configuration, then one SPI provider, then the built-in FlowId-only default. An empty builder selects no metadata.
+
 Default resolution is lazy, thread-safe, and cached per defining library classloader; the first caller's thread context classloader does not select a JVM-wide default. The provider and its registration must be visible to that library classloader; pass explicit configuration when application classloader isolation prevents that visibility.
+
 Multiple providers, provider failures, and null configurations cause a cached `IllegalStateException` when the default is requested. Explicit configuration bypasses default resolution even after failure. Provider failure messages and cause chains are not exposed.
+
 Assertions raised by a configuration provider are sanitized and cached too, rather than leaving the lazy default holder unusable. Concurrent callers receive the same cached configuration failure, and explicit overrides still bypass provider evaluation before or after that failure.
+
 There is no global setter or runtime reload. Future adapters should capture the resolved instance at installation. Codec providers remain independent; selecting a key does not register or instantiate its codec.
+
+=== Return Policy
 
 Selecting a custom key also does not change its codec's inbound replacement policy. The `ContextChainDataService` default accepts returned replacements and removals even when the caller already has a value or removal marker; FlowId explicitly preserves existing caller state instead. Custom codecs must implement `marshalRemovalToString()` and `isRemoval(...)` to propagate explicit deletions. Forked HTTP tests register both SPIs and verify these policies together across all FlowId profiles, including asynchronous server updates, private-storage isolation, and local re-addition after a returned removal.
 
@@ -70,11 +81,22 @@ ContextTransport.writeTo(outgoingCarrier, selected); // explicit configuration
 ContextTransport.readFrom(incomingCarrier, selected);
 ----
 
+==== Carrier Operations
+
 The carrier supplies `getAll(key)`, `set(key, value)`, and `remove(key)` over one message's headers. Reads must preserve duplicates; writes replace or remove all values for the selected key.
+
 The allowlist selects storage import/export, not header sanitization: unselected application headers are never accessed or removed. A selected key without a registered `ContextChainDataService` has no codec and is ignored. An empty allowlist performs no carrier access.
+
 Values and removal markers use the same codec, duplicate detection, inbound replacement, stale-header cleanup, and optional-error reporting engine as EventBus. EventBus keeps its existing selection of all discovered providers rather than adopting the new default allowlist.
+
 Ordinary value encoders and decoders must return non-null results. A failed or null decode leaves existing values and removal markers unchanged, while healthy providers and later valid messages continue normally. A null value encoding omits that key and reports a codec failure. In contrast, a null removal encoding explicitly means unsupported: the outgoing header is omitted without an error, including any stale values for that key.
+
+==== Context Ownership
+
 These calls require an active Vert.x context. An adapter must establish an isolated server-request or consumer-record context before import, and restore the original caller context before importing a response. Carrier operations do not create those scopes or bind callbacks themselves.
+
+==== Protocol Responsibilities
+
 Protocol adapters remain responsible for safe header names and byte encoding, size limits, and destination policies. In particular, raw debug JSON is not necessarily safe as an HTTP header value. Carrier operations do not install protocol adapters themselves.
 
 The HTTP and Kafka adapters reject malformed codec text (including unpaired Java surrogates) rather than silently replacing characters during UTF-8 encoding. Invalid metadata is reported and omitted; the application payload still travels normally.

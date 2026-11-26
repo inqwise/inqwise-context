@@ -21,19 +21,45 @@ consumer.handler(KafkaContextTransport.handler(record -> {
 }, "orders"));
 ----
 
+=== Configuration
+
 Both adapters capture shared default configuration when created. Explicit overloads are `sender(producer, configuration, allowedTopics...)` and `handler(configuration, applicationHandler, allowedTopics...)`.
+
+=== Topic Policy
+
 Topic allowlists are exact and case-sensitive, with no wildcard or regular-expression matching. No allowed topics means no propagation. Denied sends still submit the payload but strip managed metadata headers; denied consumed records still reach the application in a fresh context without imported metadata.
+
+=== Sending And Acknowledgments
+
 The sender snapshots stored metadata and copies record headers before submission, leaving the supplied record and header buffers unchanged. Key/value objects are not deep-copied. Reusing a record across flows therefore does not overwrite its metadata headers. Broker acknowledgments resume on the sending context, on success or failure; they are not consumer replies and cannot return consumer changes to the producer.
+
 Changing or removing stored metadata while a send is pending affects subsequent sends, not the already submitted record. Its acknowledgment observes the caller's current storage; it does not restore the send-time snapshot. Tests cover a shared sender across event-loop, worker, and virtual-thread verticles, with reverse-order success/failure acknowledgments and in-flight replacements or removals.
+
+=== Consumer Record Contexts
+
 Every handler invocation copies the current Vert.x context using Vert.x local-copy semantics, then resets only this library's storage before importing the record. Unrelated context locals follow Vert.x's duplication rules, and each record receives independent storage even when processing overlaps or a record has no metadata. Timer callbacks created in that scope retain it. For batch consumption, invoke the same wrapped handler once for each record rather than importing a whole batch into one shared context.
+
 Calls must run in an active Vert.x context. APIs whose futures complete on a shared consumer's creation context still need `ContextPropagation.bind(...)` before application continuations; the record handler does not change those APIs' behavior.
+
+=== Processing And Lifecycle Ownership
+
 Producer close/flush/transactions and consumer commits/pause/resume/retries remain on the native clients under application control. The adapter does not await asynchronous processing or manage per-partition ordering and offset completion; context isolation is not a delivery guarantee. Synchronous application handler exceptions and errors propagate unchanged to the invoking consumer after restoring its context, so native tracing and error handling can observe the failure. They are not swallowed or reported as metadata failures. Timers already scheduled in the record context retain that context even if the handler subsequently throws.
+
+=== Headers And Size Limits
+
 Kafka uses case-sensitive `inqwise-context-` header names with the storage key's original spelling. Keys must be valid UTF-8 text with at most 128 UTF-16 code units (`String.length()`); a supplementary Unicode character counts as two units. Values contain `1:` followed by the codec output as strict UTF-8 bytes, without the additional Base64URL layer used by HTTP. Encoded values are bounded to 128 KiB plus the two-byte envelope prefix, and aggregate managed key/value bytes to 256 KiB, counting encoded UTF-8 bytes rather than Java character counts. Codec payload limits and Kafka client/broker record limits apply independently. Do not copy managed headers verbatim between HTTP and Kafka; import and re-export through their adapters.
+
+=== Metadata Failures
+
 Malformed, duplicate, null-valued, or oversized metadata is reported without stopping record delivery or producer submission. Selected metadata remains untrusted input rather than authenticated identity. Tests use the real Vert.x wrappers around Kafka `MockProducer` and `MockConsumer`, plus controlled consumer records; no live-broker, rebalance, transaction, or delivery-guarantee validation is claimed.
+
+=== Validation And Advisory Assessment
 
 For the Kafka advisory assessment, see link:security-scans.adoc#_kafka_advisory_triage[scan triage].
 
 Validation scenarios and exclusions are documented in link:testing.adoc[testing and coverage].
+
+=== Application Record Failures
 
 Invalid application records and header-accessor failures fail the sender's future rather than being treated as optional metadata failures. Record validity, like producer/consumer lifecycle and processing order, remains application-owned.
 
