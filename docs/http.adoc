@@ -1,0 +1,62 @@
+= HTTP Transport Reference
+:toc:
+:toclevels: 2
+
+link:../README.adoc[Quick start] | link:usage.adoc[Practical guide] | link:advanced.adoc[Expert guide] | link:index.adoc[All documentation]
+
+This is the detailed contract reference. For an installation walkthrough and short examples, use the link:usage.adoc[practical guide].
+
+== HTTP Transport
+
+The opt-in `HttpContextTransport` adapter propagates metadata through WebClient requests and core HTTP server responses. Applications using it must include `io.vertx:vertx-web-client` aligned with their Vert.x version; it is an optional, provided dependency of this library.
+
+[source,java]
+----
+// Client application: install once, then use the normal WebClient API.
+HttpContextTransport.install(client, URI.create("http://orders.example:8080"));
+client.getAbs("http://orders.example:8080/orders").send();
+
+// Server application: wrap its core HTTP request handler.
+vertx.createHttpServer().requestHandler(HttpContextTransport.handler(request -> {
+    FlowId flow = FlowIdContext.get();
+    request.response().end("processed");
+}));
+----
+
+Both sides capture the shared configuration at installation. Explicit overloads are `install(client, configuration, allowedOrigins...)` and `handler(configuration, applicationHandler)`.
+Invalid HTTP metadata keys, including case-colliding selections, are rejected before client instrumentation or server-handler creation; correcting the configuration allows installation on the same client. Send requests from an active Vert.x context, normally a deployed verticle callback. A send from an ordinary Java thread fails its request future before network delivery, without poisoning later correctly deployed use of that client.
+The server adapter requires the original isolated HTTP request context. Calling it without a context or from a root context fails before invoking the application or changing response headers. Native requests and Vert.x's standard request wrappers are also rejected on an unrelated duplicated context, before metadata import or response-hook installation; do not redispatch incoming requests onto an unrelated context. Custom request implementations remain responsible for preserving dispatch affinity. Real-request tests over HTTP/1.1 and both clear-text HTTP/2 implementations verify that rejected dispatches leave unrelated storage unchanged and the request usable on its original isolated context.
+Create session wrappers and register interceptors that mutate headers or routing before installing transport on the final client:
+
+[source,java]
+----
+WebClientSession session = WebClientSession.create(baseClient);
+HttpContextTransport.install(session, URI.create("http://orders.example:8080"));
+session.getAbs("http://orders.example:8080/orders").send();
+----
+
+A session created from an already-instrumented plain client inherits unsafe interceptor ordering: its default headers would be merged after transport sanitization. Requests through that session fail before sending with an installation-order error; the original client remains usable. Do not append interceptors that mutate headers or routing, or introduce custom wrappers, after installation.
+Client origins are exact HTTP(S) scheme/host/port entries, not wildcards or path prefixes. No origins means no propagation. Each send, including redirects, is checked again; final responses from denied origins are not imported. Explicit socket routing or authority overrides that disagree with the target are denied propagation.
+Configured proxies deny metadata export and response import by default, even when the logical target and proxy origins are allowlisted. Native HTTP payload delivery and proxy/TLS handling are unchanged. Client proxy defaults are captured at installation, while per-request proxy options are checked on each send. Clearing a request's proxy option with `.proxy(null)` does not bypass this policy when Vert.x falls back to the client's default proxy; default proxy configuration remains fail-closed even if native non-proxy filtering selects a direct route. Use a client without proxy defaults for direct calls that need metadata propagation.
+Once a proxy is configured for a request, metadata stays disabled for its entire redirect chain, even if Vert.x regenerates options without the per-request proxy and routes a later hop directly. CONNECT redirect tests verify both native client-default fallback and per-request proxy loss, malformed intermediate metadata, unchanged native routing and payloads, and preservation of caller values/removals/empty storage through the final response and timers.
+Explicit Host headers are checked independently of Vert.x's request authority: their host and effective port must match the destination. Conflicting, invalid, or duplicate Host values disable metadata export and response import without changing native payload delivery. A matching Host override remains supported, while explicit socket routing requires a separate trust policy even when its logical and physical origins are both allowlisted.
+Native `HttpClientRequest.authority(...)` overrides are checked too, including when a correctly ordered interceptor changes authority after connection creation. Tests over HTTP/1.1 and both clear-text HTTP/2 implementations allow a matching authority but deny metadata for changed host or port, even when both origins are allowlisted. They verify the received wire authority, payload delivery, stale-header stripping, return policy for existing/empty caller storage, and timer context.
+The WebClient `virtualHost` API adds explicit socket routing, so metadata is disabled even if the virtual host matches the original host. HTTP/2 tests verify the resulting `:authority`, payload delivery, and denied metadata on both Vert.x implementations, with direct requests as propagation controls. Under default Vert.x header-validation settings, manually adding `:authority`, `:scheme`, `:path`, or `:method` through the WebClient header API is rejected before sending; storage and the next valid request remain usable.
+For requests without proxy configuration, each redirect hop exports the current caller storage independently: a denied hop strips metadata, but does not prevent a later allowed hop from exporting it again. Responses followed as redirects are not imported, even if their metadata is malformed. Only the final response participates in return propagation. Three-hop loopback tests cover allowed and denied intermediate/final destinations with caller values, removal markers, and empty storage.
+The client captures the sending context per request, not when the shared client is created. Final-response metadata is imported as soon as response headers arrive, before body decoding and application callbacks. HTTP error status responses are still responses. A later body decoding or streaming failure does not undo valid imported metadata; failures before response headers arrive import nothing and leave caller storage unchanged.
+The server imports into Vert.x's native isolated HTTP request context, preserving body and timer callbacks. It exports current state immediately before response headers are committed, including changes made asynchronously before that point. It owns `headersEndHandler`; do not replace that hook in application code or other middleware. State changes after headers are committed cannot change already-sent metadata.
+FlowId values and removals retain the existing inbound preservation policy. A server replacement or removal is sent back but does not overwrite a caller's existing FlowId state. An empty caller can import the returned value or removal.
+Return propagation checks the caller's current storage, not a saved send-time value. Replacing or removing a FlowId while a request is pending therefore preserves that newer state when the response arrives. Shared-client tests cover reverse-order responses across event-loop, worker, and virtual-thread verticles, including server replacements, removals, and HTTP error statuses. The same checks run with plain clients and sessions over HTTP/1.1 and both clear-text HTTP/2 implementations; response callbacks and subsequent timers retain each caller's exact replacement instance or removal marker, independently of other callers and stale managed session defaults.
+
+The adapter owns the case-insensitive `inqwise-context-` header namespace and clears managed outgoing headers before exporting allowed storage items, including on redirects. Storage keys must be HTTP token strings of at most 128 characters, and configured keys must not collide ignoring case.
+Values use `1:` followed by unpadded Base64URL of the codec's UTF-8 output. This keeps legacy, JSON, gzip, and removal representations ASCII-safe; encoding is not encryption. Encoded values are limited to 2 KiB each and managed header lines to 4 KiB in total, including names and line overhead. Oversized, malformed, or duplicate metadata is reported through the context exception handler without failing HTTP delivery. Normal HTTP server/proxy header limits still apply independently.
+Responses carrying metadata are marked `Cache-Control: no-store` to prevent storage in compliant HTTP caches. Incoming metadata is untrusted and is not authenticated identity or authorization. Loopback tests cover HTTP/1.1 and clear-text HTTP/2, including upgrade and prior knowledge with both Vert.x HTTP/2 implementations. HTTP/2 tests verify values, removal markers, empty storage, and body/timer callbacks across three overlapping streams on one connection.
+
+Direct HTTP/3 over QUIC uses the same adapter and metadata codecs. Configure the client with `new WebClientConfig().setVersions(HttpVersion.HTTP_3).setSsl(true)` and the server with `new HttpServerConfig().setVersions(HttpVersion.HTTP_3)`, providing the usual trusted TLS credentials separately. Applications must supply the platform-specific `io.netty:netty-codec-native-quic` runtime matching their Vert.x Netty version and allow UDP between peers; this library does not ship native runtimes to consumers.
+
+
+
+Validation scenarios and exclusions are documented in link:testing.adoc[testing and coverage].
+
+Application handler and interceptor failures retain native Vert.x behavior; they are not converted into optional metadata errors or automatic error responses. Generating an error response and ending any application-owned sink remain application responsibilities.
+

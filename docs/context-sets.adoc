@@ -2,6 +2,8 @@
 :toc:
 :toclevels: 2
 
+link:../README.adoc[Quick start] | link:usage.adoc[Practical guide] | link:advanced.adoc[Expert guide] | link:index.adoc[All documentation]
+
 `ContextSet<E>` is a shared context-bound handle, not a mutable `java.util.Set`. Stored `ContextSetItem<E>` values retain immutable membership snapshots and their declared element type, including when empty. This follows the link:context-maps.adoc[context map] lifecycle without treating a set as a map of flags.
 
 Use a link:context-lists.adoc[typed context list] when order and duplicate positions matter instead of uniqueness.
@@ -123,21 +125,4 @@ Treat received membership as untrusted metadata, not permissions or authenticate
 
 == Validation
 
-Tests cover defensive copies and iterator protection, equality-based uniqueness, atomic batch failures, empty/removal distinctions, raw misuse and type conflicts, factory matching, concurrent duplicate insertion with exactly one winner, and 256 additional concurrent unique insertions through public APIs on Vert.x-managed tasks.
-
-The shared collection forked fixture discovers actual external codecs and factories without optional clients or JUnit on its runtime classpath. It checks EventBus request/reply, empty snapshots, whole-item removal, reintroduction, timer identity, caller FlowId preservation, and direct HTTP-carrier snapshots across all three deployment modes and FlowId writer profiles.
-
-Separate loopback HTTP tests exercise real WebClient/server exchanges over HTTP/1.1, HTTP/2 upgrade/prior knowledge with both implementations, and trusted-TLS HTTP/3, asserting actual wire versions. They include membership changes while a request is pending and returned whole-set replacement/removal, distinguishing absence, empty sets, and removal markers without implicit factories. See link:reference.adoc#_collection_transport_coverage[collection transport coverage] for the matrix and limits.
-
-Kafka-only tests use the native mock producer to verify send-time membership snapshots and edited sets/removals forwarded across two isolated consumer scopes. Consumer changes never return through producer acknowledgments; this is adapter coverage without a live broker.
-
-A separate multi-JVM Hazelcast fixture validates set membership, typed emptiness, removal markers, and absence over the network, including returned whole-set replacements/removals after caller edits. Coordinated eight-request batches verify isolated membership/removal state during overlap across all caller threading models. Direct EventBus and generated ServiceProxy success paths reach the remote worker. Controlled ServiceProxy failures also return whole-set replacements/removals; sixteen-call mixed success/failure batches verify isolation without changing native error semantics. Coordinated clustered timeout cases inspect actual late set headers while preserving the expired caller's references and membership/removal/absence on the next remote call. Three-JVM forwarding includes middle-node replacement, removal, creation/reintroduction, and successful/failed returns.
-
-Separate local generated-ServiceProxy tests cover native no-handler failures, timeouts, and deliberately late set replacements/removals. Actual late headers are inspected while caller membership/removal/absence remains unchanged and is verified on the next call across all three caller threading models. These are not clustered timeout tests.
-
-Codec/carrier checks reject duplicate set elements, invalid/null element types, malformed envelopes, wrong shapes/versions, and duplicate metadata headers. Prior storage and healthy metadata survive rejection, the next valid set recovers, and observer failures cannot expose private payload text. Valid Unicode/empty/removal round trips use both HTTP and Kafka carriers.
-
-[source,shell]
-----
-mvn -Dtest=ContextSetTest,ContextCollectionsIntegrationTest,ContextItemFactoriesTest test
-----
+See link:testing.adoc#_set_storage_and_codec_coverage[tests and coverage boundaries]. Test setup and matrices are not required to use this collection.

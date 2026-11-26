@@ -1,0 +1,45 @@
+= Documentation Guide
+
+*New to the library? Start with the link:../README.adoc[quick start].* It explains the idea and runs one FlowId through an EventBus request and reply. You do not need to read the SPI, protocol, or testing pages first.
+
+== 1. Use The Library
+
+The link:usage.adoc[practical guide] adds examples in this order:
+
+* link:usage.adoc#_flowid_in_application_code[Initialize, read, replace, and remove a FlowId].
+* link:usage.adoc#_connect_services[Use EventBus/ServiceProxy, internal HTTP, or Kafka].
+* link:usage.adoc#_timers_and_external_callbacks[Keep context through timers and external callbacks].
+* link:usage.adoc#_add_application_metadata[Declare typed application metadata and collections].
+
+== 2. Extend It
+
+The link:advanced.adoc[expert guide] builds on the practical examples: atomic replacement, a complete custom codec, return policy, SPI registration, adapter configuration, factories, and FlowId format selection.
+
+For collection operations, choose the structure your application needs:
+
+[cols="1,2",options="header"]
+|===
+|Structure |Use it for
+|link:context-maps.adoc[Map] |Named attributes such as region or business-operation labels.
+|link:context-sets.adoc[Set] |Unique membership such as operation tags.
+|link:context-lists.adoc[List] |Ordered metadata where duplicates are meaningful.
+|===
+
+== 3. Look Up Exact Behavior
+
+Use these only when you need a specific contract or integration limit:
+
+* link:storage.adoc[Storage and items]: ownership, atomicity, lifecycle, and factories.
+* link:transport-configuration.adoc[Transport configuration]: defaults, provider discovery, and custom carriers.
+* link:eventbus.adoc[EventBus and FlowId]: ServiceProxy, replacement/removal, codec formats, and failure reporting.
+* link:http.adoc[HTTP]: allowed origins, routing restrictions, HTTP/3 setup, headers, and size limits.
+* link:kafka.adoc[Kafka]: topic policies, per-record contexts, acknowledgments, and lifecycle boundaries.
+
+The link:reference.adoc[reference index] preserves the older reference section links.
+
+== For Contributors And Operators
+
+* link:development.adoc[Development and release]: build requirements, workflow regression commands, credentials, signing, and release procedures.
+* link:testing.adoc[Testing and coverage]: deterministic scenarios, test matrices, and what is not tested.
+* link:../SECURITY.md[Security policy]: vulnerability reporting and dependency policy.
+* link:security-scans.adoc[Dependency scan triage]: findings, identity corrections, and blocking versus advisory scans.

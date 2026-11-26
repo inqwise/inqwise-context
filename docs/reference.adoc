@@ -1,510 +1,61 @@
-= Inqwise Context Reference
-:toc:
-:toclevels: 2
+= Detailed Reference
 
-Start with the link:../README.adoc[quick start, use cases, and transport overview]. This reference documents storage contracts, SPI configuration, wire behavior, policy boundaries, and validation coverage.
+link:../README.adoc[Quick start] | link:usage.adoc[Practical guide] | link:advanced.adoc[Expert guide] | link:index.adoc[All documentation]
+
+Looking for a first example? Start with the quick start or practical guide. This page is an index of exact contracts and operational limits, not a tutorial. Existing section links are kept here so older bookmarks still lead to the relevant document.
 
 == Typed Context Items
 
-Applications use type-specific accessors rather than string-keyed storage:
-
-[source,java]
-----
-FlowId existing = FlowIdContext.get();       // nullable; never creates
-FlowId required = FlowIdContext.require();  // fails if absent or removed
-FlowId initial = FlowIdContext.getOrCreate(); // explicit initialization
-
-FlowIdContext.put(replacement);
-FlowId previous = FlowIdContext.remove();
-----
-
-`getOrCreate()` retains an existing instance or atomically constructs and stores an initial value. The built-in FlowId factory creates a random UUID and a current millisecond timestamp. An SPI factory can override it; `getOrCreate(() -> suppliedValue)` explicitly bypasses SPI/default resolution. Failed or null construction leaves no newly stored value. An explicit removal is not absence: creation refuses to revive its marker, and only an intentional `put` reintroduces the item. No read, transport import, reply handler, or codec automatically invokes a factory. Applications choose initialization and required-item validation at their flow boundaries.
-
-`FlowIdContext.slot()` exposes its immutable typed declaration for provider/configuration authors. The handle contains no captured context or stored value and is safe to share; each operation resolves the active Vert.x context. Reads of empty storage do not allocate a map. Calls outside an active context fail explicitly. The old string-keyed `Storage` facade is now package-private implementation support, not a public API.
-
-External modules can declare their own items without changing a central library registry:
-
-[source,java]
-----
-public final class TenantContext {
-    public record Tenant(String id) implements ContextChainDataItem {}
-
-    public static final ContextSlot<Tenant> VALUE =
-        ContextSlots.define("tenant", Tenant.class);
-}
-
-TenantContext.VALUE.put(new TenantContext.Tenant("tenant-a"));
-TenantContext.Tenant tenant = TenantContext.VALUE.require();
-----
-
-Declare the key and type once. Typed operations validate values against that type; replacement also checks the existing value atomically, rejecting incompatible data without overwriting it. The item's codec implements `ContextChainDataService` and returns `TenantContext.VALUE.key()` from `key()`; its encoder can validate/cast with `TenantContext.VALUE.type().cast(item)`. Slot declaration does not register a codec or enable propagation. A third argument to `ContextSlots.define` supplies an optional default factory; types requiring application input can omit it. Factories construct values, while aggregate constructors enforce required fields. A concurrent map does not make mutable item internals or read/modify/write sequences atomic.
+link:storage.adoc[Storage, immutable items, atomic replacement, and factory SPI].
 
 === Ownership and Atomic Replacement
 
-For standard collections, see link:context-maps.adoc[typed context maps], link:context-sets.adoc[typed context sets], and link:context-lists.adoc[typed context lists]. They build on the same slot and whole-item transport contracts.
-
-Storage retains exact object references without copying. Prefer immutable items; independently thread-safe mutable items remain the application's responsibility, including consistent encoding by codecs. A slot resolves the current execution context, not a thread-owned value. Neither storage nor transport provides locks around mutable fields.
-
-Use `update` to transform one existing immutable item atomically instead of a separate read/modify/write sequence:
-
-[source,java]
-----
-TenantContext.Tenant replacement = TenantContext.VALUE.update(current ->
-    new TenantContext.Tenant(current.id() + "-verified"));
-
-FlowIdContext.put(FlowId.builder().withId("replacement-flow").build());
-----
-
-The updater runs once for an existing correctly typed value and returns the exact stored replacement; returning the original instance is allowed. It must be short, synchronous, and must not modify context storage or initialize other slots. An absent or removed item fails without invoking the updater or a factory. A null result is invalid: use `remove()` for explicit deletion, and `put()` for intentional reintroduction.
-
-`FlowId` is final and immutable. `FlowIdContext.put(...)` replaces the entire instance, not individual fields. Omitted fields remain absent in the replacement; storage does not merge them from the old value. Use `FlowId.builderFrom(current)` when constructing a replacement that intentionally retains existing fields. The FlowId facade has no dedicated `update` method; callers that need atomic derivation can explicitly use the generic `FlowIdContext.slot().update(...)` operation, which also replaces the complete value.
-
-An exception or invalid result retains the previous reference, but cannot undo in-place mutations performed by application code. Construct a replacement rather than modifying the input. Atomicity covers one slot only; combine values into one immutable item if they must change together. There are no cross-slot or distributed transactions.
-
-Updates affect subsequent outgoing calls and replies, not already-sent messages or remote instances. Inbound values and removals still follow the codec's replacement policy; an atomic local update does not change FlowId's caller-preservation policy. Initial creation remains explicit through `getOrCreate()`.
+link:storage.adoc#_ownership_and_atomic_replacement[Object ownership and single-item atomic updates].
 
 === Factory Providers
 
-For an environment-specific FlowId factory:
-
-[source,java]
-----
-package example;
-
-import java.util.UUID;
-import com.inqwise.context.ContextSlot;
-import com.inqwise.context.FlowIdContext;
-import com.inqwise.context.data.FlowId;
-import com.inqwise.context.spi.ContextItemFactory;
-
-public final class OrderFlowIdFactory implements ContextItemFactory<FlowId> {
-    public ContextSlot<FlowId> slot() {
-        return FlowIdContext.slot();
-    }
-
-    public FlowId create() {
-        return FlowId.builder().withId("order-" + UUID.randomUUID()).build();
-    }
-}
-----
-
-Register `example.OrderFlowIdFactory` in `META-INF/services/com.inqwise.context.spi.ContextItemFactory`. Default factory discovery is lazy, cached, and uses the library's defining classloader, independently of the first caller's thread context classloader. Providers must be visible to that loader, concurrency-safe, and must not capture a flow in their constructor. Duplicate exact keys, invalid providers, or mismatched types fail explicit creation; discovery failures are cached without original messages or cause chains. Existing values, reads, removal markers, and explicit factories bypass discovery. There is no global setter or runtime reload. Keep factories fast; do not modify context storage or initialize other slots inside the atomic construction callback.
+link:storage.adoc#_factory_providers[Initialization factory example and discovery contract].
 
 == Transport Configuration
 
-`ContextTransportConfiguration` is an immutable allowlist for opt-in carrier transport and future protocol adapters. It contains metadata keys, never stored values or captured request contexts.
-Configuration resolution alone does not enable HTTP or Kafka propagation, and this configuration does not change the existing EventBus transport.
-
-Core storage, carrier read/write operations, and EventBus propagation do not require the optional HTTP or Kafka clients. Forked-JVM tests run without those clients (or Redis, Elasticsearch, ServiceProxy, CircuitBreaker, Hazelcast, or JUnit), exercising every FlowId codec profile and event-loop/worker deployments with values, removals, and empty storage. Applications using a protocol adapter must provide that adapter's client dependency explicitly.
-Additional forked applications exercise HTTP without Kafka and Kafka without WebClient in all three codec profiles. HTTP coverage uses loopback requests and responses; Kafka coverage uses the real Vert.x producer wrapper with `MockProducer` and controlled consumer records. These tests check runtime dependency isolation, not compatibility with a live Kafka broker.
-
-[source,java]
-----
-ContextTransportConfiguration shared = ContextTransport.defaultConfiguration();
-// Without an application SPI provider, shared.includedKeys() contains only flow_id.
-
-ContextTransportConfiguration explicit = ContextTransportConfiguration.builder()
-    .include(FlowIdContext.slot())
-    .include(TenantContext.VALUE)
-    .build();
-
-ContextTransportConfiguration selected = ContextTransport.resolveConfiguration(explicit);
-// selected is the explicit instance; null selects the shared default instead.
-----
-
-An application can supply one `ContextTransportConfigurationProvider`:
-
-[source,java]
-----
-package example;
-
-import com.inqwise.context.ContextTransportConfiguration;
-import com.inqwise.context.spi.ContextTransportConfigurationProvider;
-
-public final class ApplicationTransportConfiguration implements ContextTransportConfigurationProvider {
-    @Override
-    public ContextTransportConfiguration configuration() {
-        return ContextTransportConfiguration.builder().include("flow_id").build();
-    }
-}
-----
-
-Register it in `META-INF/services/com.inqwise.context.spi.ContextTransportConfigurationProvider`:
-
-[source,text]
-----
-example.ApplicationTransportConfiguration
-----
-
-Precedence is explicit configuration, then one SPI provider, then the built-in FlowId-only default. An empty builder selects no metadata.
-Default resolution is lazy, thread-safe, and cached per defining library classloader; the first caller's thread context classloader does not select a JVM-wide default. The provider and its registration must be visible to that library classloader; pass explicit configuration when application classloader isolation prevents that visibility.
-Multiple providers, provider failures, and null configurations cause a cached `IllegalStateException` when the default is requested. Explicit configuration bypasses default resolution even after failure. Provider failure messages and cause chains are not exposed.
-Assertions raised by a configuration provider are sanitized and cached too, rather than leaving the lazy default holder unusable. Concurrent callers receive the same cached configuration failure, and explicit overrides still bypass provider evaluation before or after that failure.
-There is no global setter or runtime reload. Future adapters should capture the resolved instance at installation. Codec providers remain independent; selecting a key does not register or instantiate its codec.
-
-Selecting a custom key also does not change its codec's inbound replacement policy. The `ContextChainDataService` default accepts returned replacements and removals even when the caller already has a value or removal marker; FlowId explicitly preserves existing caller state instead. Custom codecs must implement `marshalRemovalToString()` and `isRemoval(...)` to propagate explicit deletions. Forked HTTP tests register both SPIs and verify these policies together across all FlowId profiles, including asynchronous server updates, private-storage isolation, and local re-addition after a returned removal.
-Kafka-only forked tests use the same client-independent codec and configuration SPI fixtures. They verify asynchronous replacements/removals across two consumer scopes, private-storage isolation, and independently decoded objects in every FlowId profile. Both consumer scopes may change their local state without changing the original producer's values or removal markers; Kafka acknowledgments do not apply HTTP-style return propagation. These checks use `MockProducer` and controlled consumer records, not a live broker.
+link:transport-configuration.adoc[Allowlist resolution, default-configuration SPI, and custom carriers].
 
 === Carrier Transport
 
-Custom integrations can explicitly export and import metadata through `ContextTransportCarrier`:
-
-[source,java]
-----
-ContextTransport.writeTo(outgoingCarrier); // shared default
-ContextTransport.readFrom(incomingCarrier); // shared default
-
-ContextTransport.writeTo(outgoingCarrier, selected); // explicit configuration
-ContextTransport.readFrom(incomingCarrier, selected);
-----
-
-The carrier supplies `getAll(key)`, `set(key, value)`, and `remove(key)` over one message's headers. Reads must preserve duplicates; writes replace or remove all values for the selected key.
-The allowlist selects storage import/export, not header sanitization: unselected application headers are never accessed or removed. A selected key without a registered `ContextChainDataService` has no codec and is ignored. An empty allowlist performs no carrier access.
-Values and removal markers use the same codec, duplicate detection, inbound replacement, stale-header cleanup, and optional-error reporting engine as EventBus. EventBus keeps its existing selection of all discovered providers rather than adopting the new default allowlist.
-Ordinary value encoders and decoders must return non-null results. A failed or null decode leaves existing values and removal markers unchanged, while healthy providers and later valid messages continue normally. A null value encoding omits that key and reports a codec failure. In contrast, a null removal encoding explicitly means unsupported: the outgoing header is omitted without an error, including any stale values for that key.
-These calls require an active Vert.x context. An adapter must establish an isolated server-request or consumer-record context before import, and restore the original caller context before importing a response. Carrier operations do not create those scopes or bind callbacks themselves.
-Protocol adapters remain responsible for safe header names and byte encoding, size limits, and destination policies. In particular, raw debug JSON is not necessarily safe as an HTTP header value. Carrier operations do not install protocol adapters themselves.
-
-The HTTP and Kafka adapters reject malformed codec text (including unpaired Java surrogates) rather than silently replacing characters during UTF-8 encoding. Invalid metadata is reported and omitted; the application payload still travels normally.
+link:transport-configuration.adoc#_carrier_transport[Custom header carriers and import/export contracts].
 
 == HTTP Transport
 
-The opt-in `HttpContextTransport` adapter propagates metadata through WebClient requests and core HTTP server responses. Applications using it must include `io.vertx:vertx-web-client` aligned with their Vert.x version; it is an optional, provided dependency of this library.
-
-[source,java]
-----
-// Client application: install once, then use the normal WebClient API.
-HttpContextTransport.install(client, URI.create("http://orders.example:8080"));
-client.getAbs("http://orders.example:8080/orders").send();
-
-// Server application: wrap its core HTTP request handler.
-vertx.createHttpServer().requestHandler(HttpContextTransport.handler(request -> {
-    FlowId flow = FlowIdContext.get();
-    request.response().end("processed");
-}));
-----
-
-Both sides capture the shared configuration at installation. Explicit overloads are `install(client, configuration, allowedOrigins...)` and `handler(configuration, applicationHandler)`.
-Invalid HTTP metadata keys, including case-colliding selections, are rejected before client instrumentation or server-handler creation; correcting the configuration allows installation on the same client. Send requests from an active Vert.x context, normally a deployed verticle callback. A send from an ordinary Java thread fails its request future before network delivery, without poisoning later correctly deployed use of that client.
-The server adapter requires the original isolated HTTP request context. Calling it without a context or from a root context fails before invoking the application or changing response headers. Native requests and Vert.x's standard request wrappers are also rejected on an unrelated duplicated context, before metadata import or response-hook installation; do not redispatch incoming requests onto an unrelated context. Custom request implementations remain responsible for preserving dispatch affinity. Real-request tests over HTTP/1.1 and both clear-text HTTP/2 implementations verify that rejected dispatches leave unrelated storage unchanged and the request usable on its original isolated context.
-Create session wrappers and register interceptors that mutate headers or routing before installing transport on the final client:
-
-[source,java]
-----
-WebClientSession session = WebClientSession.create(baseClient);
-HttpContextTransport.install(session, URI.create("http://orders.example:8080"));
-session.getAbs("http://orders.example:8080/orders").send();
-----
-
-A session created from an already-instrumented plain client inherits unsafe interceptor ordering: its default headers would be merged after transport sanitization. Requests through that session fail before sending with an installation-order error; the original client remains usable. Do not append interceptors that mutate headers or routing, or introduce custom wrappers, after installation.
-Session tests cover HTTP/1.1 and both clear-text HTTP/2 implementations, allowed and denied origins, values, removals, and empty storage. They verify that stale managed session defaults are stripped, application headers and cookies survive, and return metadata follows the same inbound policy as ordinary requests.
-Session redirect tests also verify sanitization on each hop, including denied final destinations. Redirect cookies retain native session behavior, while malformed metadata on followed responses is ignored and only the final response can update caller storage.
-Client origins are exact HTTP(S) scheme/host/port entries, not wildcards or path prefixes. No origins means no propagation. Each send, including redirects, is checked again; final responses from denied origins are not imported. Explicit socket routing or authority overrides that disagree with the target are denied propagation.
-Configured proxies deny metadata export and response import by default, even when the logical target and proxy origins are allowlisted. Native HTTP payload delivery and proxy/TLS handling are unchanged. Client proxy defaults are captured at installation, while per-request proxy options are checked on each send. Clearing a request's proxy option with `.proxy(null)` does not bypass this policy when Vert.x falls back to the client's default proxy; default proxy configuration remains fail-closed even if native non-proxy filtering selects a direct route. Use a client without proxy defaults for direct calls that need metadata propagation.
-Once a proxy is configured for a request, metadata stays disabled for its entire redirect chain, even if Vert.x regenerates options without the per-request proxy and routes a later hop directly. CONNECT redirect tests verify both native client-default fallback and per-request proxy loss, malformed intermediate metadata, unchanged native routing and payloads, and preservation of caller values/removals/empty storage through the final response and timers.
-Loopback tests cover HTTP/1.1 forward proxies and HTTPS through HTTP CONNECT with explicitly trusted temporary certificates and hostname verification enabled. They verify client-default, per-request, and cleared-default proxy settings, FlowId values/removals/empty storage, stale-header stripping, ignored return metadata, payloads, and timer context. CONNECT headers carry no managed metadata. SOCKS, TLS connections to the proxy itself, and HTTP/2-over-proxy behavior remain outside this coverage.
-Explicit Host headers are checked independently of Vert.x's request authority: their host and effective port must match the destination. Conflicting, invalid, or duplicate Host values disable metadata export and response import without changing native payload delivery. A matching Host override remains supported, while explicit socket routing requires a separate trust policy even when its logical and physical origins are both allowlisted.
-Native `HttpClientRequest.authority(...)` overrides are checked too, including when a correctly ordered interceptor changes authority after connection creation. Tests over HTTP/1.1 and both clear-text HTTP/2 implementations allow a matching authority but deny metadata for changed host or port, even when both origins are allowlisted. They verify the received wire authority, payload delivery, stale-header stripping, return policy for existing/empty caller storage, and timer context.
-IPv6 loopback tests cover literal `http://[::1]:port` origins, native and explicit matching bracketed Host values, response import, and timer context over HTTP/1.1 and both clear-text HTTP/2 implementations. A conflicting IPv6 Host on HTTP/1.1 still delivers the payload without metadata. In the HTTP/2 tests, Vert.x rejects the conflicting Host/authority pair before the server handler runs with a protocol-error stream reset; an uninstrumented client behaves identically. The adapter preserves that native failure and caller storage, and a subsequent valid request propagates normally. These checks require IPv6 loopback support in the test environment.
-The WebClient `virtualHost` API adds explicit socket routing, so metadata is disabled even if the virtual host matches the original host. HTTP/2 tests verify the resulting `:authority`, payload delivery, and denied metadata on both Vert.x implementations, with direct requests as propagation controls. Under default Vert.x header-validation settings, manually adding `:authority`, `:scheme`, `:path`, or `:method` through the WebClient header API is rejected before sending; storage and the next valid request remain usable.
-For requests without proxy configuration, each redirect hop exports the current caller storage independently: a denied hop strips metadata, but does not prevent a later allowed hop from exporting it again. Responses followed as redirects are not imported, even if their metadata is malformed. Only the final response participates in return propagation. Three-hop loopback tests cover allowed and denied intermediate/final destinations with caller values, removal markers, and empty storage.
-The client captures the sending context per request, not when the shared client is created. Final-response metadata is imported as soon as response headers arrive, before body decoding and application callbacks. HTTP error status responses are still responses. A later body decoding or streaming failure does not undo valid imported metadata; failures before response headers arrive import nothing and leave caller storage unchanged.
-Idle-timeout tests verify both sides of that header boundary on event-loop, worker, and virtual-thread callers, with existing values, removal markers, and empty storage. They retain the native timeout failure and caller context; metadata imported before a body timeout remains available in the failure callback and subsequent timers.
-Streaming response tests exercise `BodyCodec.pipe` with a synchronous, always-writable sink on all three deployed threading models, over HTTP/1.1 and both clear-text HTTP/2 implementations. They verify header import before the first write and allow the sink to replace or remove its FlowId during consumption; later writes, sink completion, response callbacks, and timers retain that changed state. A first-chunk barrier verifies that the server's storage remains independent after the client mutation.
-Both sink-ownership modes are tested: the default codec ends the sink, while `BodyCodec.pipe(sink, false)` leaves it open for application use. After the response completes, caller-owned sinks accept another write and an explicit application end with the same caller context and changed FlowId state.
-Controlled asynchronous sinks additionally exercise one native pause/drain cycle, deferred write/end completion, and write/end failures on the same protocol/model matrix. FlowId changes made while paused survive resumption and failure, native sink failures reach the caller unchanged, and server storage stays independent. These sinks complete on the caller context; arbitrary foreign-thread sinks remain outside this coverage.
-Caller-owned asynchronous sinks also retain their lifecycle on failure: a failed write still fails the HTTP operation without ending the sink. Explicit application cleanup can subsequently succeed or fail on the same context; an application-owned end failure does not retroactively change a completed HTTP result or its latest FlowId state.
-In-flight cancellation tests capture the native `HttpClientRequest` and call `cancel()` either before response headers or after the first streamed write, after both requests have reached the server. Phase counters distinguish these boundaries: before headers there is no response import, body write, or sink completion. Both modes verify peer-observed cancellation, preservation of the caller's latest FlowId value or removal, unchanged native failure delivery, and isolation of another active request on the shared client. HTTP/2 requests share one connection; HTTP/1.1 controls use separate connections because cancellation closes the connection. These checks cover all three deployed threading models and both clear-text HTTP/2 implementations, not cancellation before a connection is acquired.
-The server imports into Vert.x's native isolated HTTP request context, preserving body and timer callbacks. It exports current state immediately before response headers are committed, including changes made asynchronously before that point. It owns `headersEndHandler`; do not replace that hook in application code or other middleware. State changes after headers are committed cannot change already-sent metadata.
-Ingress-isolation tests start servers from root and duplicated contexts on event-loop, worker, and virtual-thread verticles. They verify that startup storage and earlier server-side request mutations do not leak into later independent requests, including values, removal markers, and empty storage over one reused HTTP/1.1 connection with sequential or pipelined sends. Body and timer callbacks retain the native per-request context, and request mutations leave server startup storage unchanged.
-FlowId values and removals retain the existing inbound preservation policy. A server replacement or removal is sent back but does not overwrite a caller's existing FlowId state. An empty caller can import the returned value or removal.
-Return propagation checks the caller's current storage, not a saved send-time value. Replacing or removing a FlowId while a request is pending therefore preserves that newer state when the response arrives. Shared-client tests cover reverse-order responses across event-loop, worker, and virtual-thread verticles, including server replacements, removals, and HTTP error statuses. The same checks run with plain clients and sessions over HTTP/1.1 and both clear-text HTTP/2 implementations; response callbacks and subsequent timers retain each caller's exact replacement instance or removal marker, independently of other callers and stale managed session defaults.
-
-The adapter owns the case-insensitive `inqwise-context-` header namespace and clears managed outgoing headers before exporting allowed storage items, including on redirects. Storage keys must be HTTP token strings of at most 128 characters, and configured keys must not collide ignoring case.
-Values use `1:` followed by unpadded Base64URL of the codec's UTF-8 output. This keeps legacy, JSON, gzip, and removal representations ASCII-safe; encoding is not encryption. Encoded values are limited to 2 KiB each and managed header lines to 4 KiB in total, including names and line overhead. Oversized, malformed, or duplicate metadata is reported through the context exception handler without failing HTTP delivery. Normal HTTP server/proxy header limits still apply independently.
-Response-commit tests verify that oversized server metadata and even a throwing error observer leave HTTP payload delivery intact. Stale managed response headers are stripped, server storage is unchanged, and caller values, removals, or empty storage survive. A subsequent valid response can propagate normally, retaining the usual inbound policy and timer context across all three caller threading models.
-Application handler failures are not metadata failures. Wrapped and unwrapped HTTP handler tests deliver the original runtime exception or assertion error to the native Vert.x error observer on the same isolated request context. In these tests the application observer replaces/removes its FlowId and explicitly sends a 503 response; the adapter exports that final state without changing the caller's stored instance, later timers, or the next request's isolated storage. Error-response generation remains application-owned, not automatic adapter recovery.
-Client application-interceptor tests compare instrumented and native clients across prepare, send, receive-header, and response-dispatch runtime failures. The original exception fails the request future on the caller context without being reported as a metadata error. Failures before response headers import nothing; later failures retain already-imported metadata through timers and export it on a subsequent request. The same shared client remains usable. These interceptors do not modify headers or routing.
-Responses carrying metadata are marked `Cache-Control: no-store` to prevent storage in compliant HTTP caches. Incoming metadata is untrusted and is not authenticated identity or authorization. Loopback tests cover HTTP/1.1 and clear-text HTTP/2, including upgrade and prior knowledge with both Vert.x HTTP/2 implementations. HTTP/2 tests verify values, removal markers, empty storage, and body/timer callbacks across three overlapping streams on one connection.
-
-TLS tests cover HTTP/1.1 and HTTP/2 with ALPN, using a temporary certificate trusted explicitly by the client with hostname verification enabled. They also verify that mismatched HTTP/HTTPS origin schemes deny metadata propagation without stopping payload delivery, and that untrusted certificates fail the request without changing caller storage. Tests generate their certificate using the running JDK's `keytool`; no private keys are checked in. Separate loopback tests cover explicit TCP socket routing, Host-header overrides, and the proxy cases described above; custom address resolvers and caching-client integrations remain outside these checks.
-
-Direct HTTP/3 over QUIC uses the same adapter and metadata codecs. Configure the client with `new WebClientConfig().setVersions(HttpVersion.HTTP_3).setSsl(true)` and the server with `new HttpServerConfig().setVersions(HttpVersion.HTTP_3)`, providing the usual trusted TLS credentials separately. Applications must supply the platform-specific `io.netty:netty-codec-native-quic` runtime matching their Vert.x Netty version and allow UDP between peers; this library does not ship native runtimes to consumers.
-
-HTTP/3 loopback tests force HTTP/3 on both peers and assert the actual request and response versions, so TCP fallback cannot mask failures. Three overlapping callers exercise FlowId values, removals, and empty storage, reversed replies, request isolation, exact local instance retention, return-import policy, denied origins, and server/client timers across event-loop, worker, and virtual-thread callers. Certificates are explicitly trusted with hostname verification enabled. Native test artifacts cover macOS/Linux x86-64 and ARM64 plus Windows x86-64; actual execution still depends on the host runtime. Initial HTTP/3 coverage targets direct internal calls, not proxies, Alt-Svc upgrades, connection migration, or fallback behavior.
-
-HTTP/3 failure tests also inject malformed envelopes, oversized values, and duplicate headers on requests and responses. Rejected metadata leaves payload delivery intact even when the metadata error observer throws; diagnostics retain no payload or cause chain. Existing caller values/removals skip response decoding under the usual inbound policy, while empty storage reports the rejected metadata. A subsequent valid exchange on the same client succeeds, with request isolation and caller state retained through body callbacks and timers across all three threading models.
+link:http.adoc[WebClient/server installation, origin policies, HTTP/3 requirements, envelopes, limits, and failures].
 
 == Kafka Transport
 
-`KafkaContextTransport` adds opt-in producer-to-consumer propagation. Applications using it must include `io.vertx:vertx-kafka-client` aligned with their Vert.x version; it is an optional, provided dependency of this library.
-
-[source,java]
-----
-var sender = KafkaContextTransport.sender(producer, "orders");
-sender.send(KafkaProducerRecord.create("orders", "order-key", "payload"));
-
-consumer.handler(KafkaContextTransport.handler(record -> {
-    FlowId flow = FlowIdContext.get();
-    process(record);
-}, "orders"));
-----
-
-Both adapters capture shared default configuration when created. Explicit overloads are `sender(producer, configuration, allowedTopics...)` and `handler(configuration, applicationHandler, allowedTopics...)`.
-Topic allowlists are exact and case-sensitive, with no wildcard or regular-expression matching. No allowed topics means no propagation. Denied sends still submit the payload but strip managed metadata headers; denied consumed records still reach the application in a fresh context without imported metadata.
-The sender snapshots stored metadata and copies record headers before submission, leaving the supplied record and header buffers unchanged. Key/value objects are not deep-copied. Reusing a record across flows therefore does not overwrite its metadata headers. Broker acknowledgments resume on the sending context, on success or failure; they are not consumer replies and cannot return consumer changes to the producer.
-Changing or removing stored metadata while a send is pending affects subsequent sends, not the already submitted record. Its acknowledgment observes the caller's current storage; it does not restore the send-time snapshot. Tests cover a shared sender across event-loop, worker, and virtual-thread verticles, with reverse-order success/failure acknowledgments and in-flight replacements or removals.
-Every handler invocation copies the current Vert.x context using Vert.x local-copy semantics, then resets only this library's storage before importing the record. Unrelated context locals follow Vert.x's duplication rules, and each record receives independent storage even when processing overlaps or a record has no metadata. Timer callbacks created in that scope retain it. For batch consumption, invoke the same wrapped handler once for each record rather than importing a whole batch into one shared context.
-Reentrant handler tests use controlled records on all three threading models: an inner invocation restores the outer scope on success, runtime failure, or assertion, without changing the parent flow. They verify isolated private storage, native copying of unrelated locals, unchanged failure identity, record timers after both scopes unwind, and a fresh subsequent record without metadata. Denied outer or inner topics still deliver the payload with empty library storage, ignoring their malformed metadata without reporting a metadata failure; denied inner topics also ignore removal markers. All four outer/inner topic-policy combinations are tested: denial does not suppress a later allowed invocation's fresh import, and unrelated locals retain their native copying semantics. These checks do not add automatic awaiting or ordering of asynchronous record processing.
-Calls must run in an active Vert.x context. APIs whose futures complete on a shared consumer's creation context still need `ContextPropagation.bind(...)` before application continuations; the record handler does not change those APIs' behavior.
-Producer close/flush/transactions and consumer commits/pause/resume/retries remain on the native clients under application control. The adapter does not await asynchronous processing or manage per-partition ordering and offset completion; context isolation is not a delivery guarantee. Synchronous application handler exceptions and errors propagate unchanged to the invoking consumer after restoring its context, so native tracing and error handling can observe the failure. They are not swallowed or reported as metadata failures. Timers already scheduled in the record context retain that context even if the handler subsequently throws.
-Kafka uses case-sensitive `inqwise-context-` header names with the storage key's original spelling. Keys must be valid UTF-8 text with at most 128 UTF-16 code units (`String.length()`); a supplementary Unicode character counts as two units. Values contain `1:` followed by the codec output as strict UTF-8 bytes, without the additional Base64URL layer used by HTTP. Encoded values are bounded to 128 KiB plus the two-byte envelope prefix, and aggregate managed key/value bytes to 256 KiB, counting encoded UTF-8 bytes rather than Java character counts. Codec payload limits and Kafka client/broker record limits apply independently. Do not copy managed headers verbatim between HTTP and Kafka; import and re-export through their adapters.
-Malformed, duplicate, null-valued, or oversized metadata is reported without stopping record delivery or producer submission. Selected metadata remains untrusted input rather than authenticated identity. Tests use the real Vert.x wrappers around Kafka `MockProducer` and `MockConsumer`, plus controlled consumer records; no live-broker, rebalance, transaction, or delivery-guarantee validation is claimed.
-Invalid application records are not optional metadata failures: synchronous record validation or header-accessor exceptions fail the sender's returned future. Tests compare native validation behavior and preserve accessor-failure identity, input headers/buffers, caller values/removals/empty storage, and subsequent timer context across all three deployed threading models. No record reaches the mock producer on these failures, and a later valid send through the same sender succeeds.
-Native-consumer overlap tests deliver three records from one controlled poll, including a metadata-free record, before completing any application work. Results bound with `ContextPropagation.bind` complete on ordinary Java threads in reverse record order, with success and failure cases across event-loop, worker, and virtual-thread deployments. Each continuation and subsequent timer retains its record's exact replacement instance or removal marker; failures retain their identity and consumer-parent storage stays unchanged. The adapter itself does not await these results or serialize record processing.
-These overlapping records also forward through a shared sender after asynchronous processing. Downstream handlers import the current replacement or removal only when export is allowed; denied topics still carry the payload and application headers without managed metadata. Forwarding leaves the input record's headers unchanged, acknowledgments retain the forwarding scope, and downstream storage changes do not flow back into that scope or consumer-parent storage.
-
-Mixed-transport tests exercise loopback HTTP/1.1 and direct TLS HTTP/3 -> mocked Kafka -> local EventBus with replacements and removals at every stage. HTTP/3 cases explicitly configure and verify that protocol on both peers, using trusted temporary certificates with hostname verification enabled. They verify caller values, caller removal markers, empty callers, timer callbacks, and isolation of private storage. The HTTP response contains the HTTP producer's current state, not changes made by the Kafka consumer. Tests explicitly coordinate consumer completion; this does not turn Kafka acknowledgments into RPC replies. EventBus replies still apply the normal FlowId inbound preservation policy.
-The reverse Kafka -> HTTP direction uses a native Vert.x consumer wrapping `MockConsumer` and a shared WebClient session over loopback HTTP/1.1. Two records overlap before either HTTP server response is released, starting with a wire value and missing metadata respectively. Across all three deployed threading models, each consumer asynchronously replaces or removes its FlowId before sending; allowed origins receive that state and denied origins receive no managed metadata. HTTP server replacements/removals cannot overwrite the consumer's current state, response and timer callbacks retain its scope, and private storage stays local to each record without changing consumer-parent storage.
+link:kafka.adoc[Producer/consumer adapters, record isolation, topic policies, envelopes, and lifecycle ownership].
 
 === Kafka Advisory Triage
 
-Reviewed on 2026-11-21: the CI OWASP report matches `kafka-clients:4.2.0` to `CVE-2026-41115` through the generic Apache Kafka CPE and rates it medium (CVSS 4.3), below the configured failure threshold of 7. The dependency graph supplies this client through the optional/provided Vert.x Kafka client; it does not supply a Kafka broker.
-
-The https://kafka.apache.org/community/cve-list/#CVE-2026-41115[Apache advisory] identifies a documentation/ACL discrepancy for `CONSUMER_GROUP_DESCRIBE` and confirms that `DESCRIBE` on `GROUP` is the correct authorization check. Operators must review broker group ACLs for least privilege; changing this library's client version alone does not perform that review. The adapter neither implements broker authorization nor manages ACLs, and its topic allowlist restricts metadata propagation, not Kafka access.
-
-No suppression or dependency override is applied for this finding. This assessment is specific to this advisory, not a security clearance for other Kafka findings or consuming deployments.
+link:security-scans.adoc#_kafka_advisory_triage[Kafka advisory assessment and its limits].
 
 == FlowId Wire Transport
 
-Storage access requires an active Vert.x context. Deployed verticle lifecycle callbacks and message handlers already provide one; no `runOnContext` wrapper is needed there.
-Calling a typed slot or `FlowIdContext` operation from an ordinary Java thread is an execution error and throws `IllegalStateException` rather than silently dropping metadata.
-A missing item within a valid context still returns `null`.
-
-`FlowId` is an immutable value containing an optional ID and timestamp.
-Wire identifiers must be JSON strings, or null/absent. Numbers, booleans, arrays, and objects are rejected instead of being converted to text. Empty strings, surrounding whitespace, and strings such as `"123"` or `"true"` retain their exact text. Textual `CharSequence` representations supplied by a configured JSON codec are captured as immutable strings. The public `FlowId(JsonObject)` constructor remains unchanged.
-The EventBus transport serializes it under `flow_id` and restores its values before the receiving handler runs.
-The receiving service gets a new Java instance with the same ID and timestamp; an existing `FlowId` in that context is preserved.
-Consequently, replies, including replies from a service that explicitly replaced its own stored value, do not overwrite the caller's original instance.
-`FlowIdContext.put(replacement)` remains available for intentional local replacement.
-Other data providers retain their previous inbound replacement behavior unless they opt out through `replaceExistingOnInbound()`.
-
-Replacement and removal change the current context and propagate on calls and replies, including inside a deployed ServiceProxy implementation:
-
-[source,java]
-----
-FlowId incoming = FlowIdContext.get();
-FlowId replacement = FlowId.builderFrom(incoming).withId("service-flow").build();
-FlowIdContext.put(replacement);
-
-FlowId removed = FlowIdContext.remove(); // returns replacement
-// Subsequent calls and replies carry removal instead of the old value.
-FlowIdContext.put(replacement); // explicitly re-add before the next call
-----
-
-Removal leaves a deletion marker: `FlowIdContext.get()` returns `null`, and incoming replies cannot silently restore it.
-`FlowId` transports this as `flow-id:1:remove:` under the same `flow_id` header for every codec profile, replacing stale explicit headers.
-Removal follows exactly the same inbound replacement policy as `put`: an empty receiving context imports and forwards the marker, while an existing `FlowId` or deletion marker is preserved.
-Thus a downstream removal travels back in a reply but does not erase a caller's existing `FlowId`, just as a downstream replacement does not overwrite it.
-An explicit local `FlowIdContext.put` re-adds a value and replaces the marker.
-Providers that allow inbound replacement apply incoming removals even to existing values; providers without removal encoding continue to omit the outgoing header.
-
-[source,text]
-----
-A removes -> B imports removal -> C imports removal
-A stays removed <- B stays removed <- C replies with removal
-
-A has flow-A -> B receives flow-A and removes it
-A retains flow-A <- B replies with removal
-----
-
-The writer profile is selected by the `inqwise.context.flow-id.codec` JVM property before creating Vert.x; the service captures it when constructed:
-
-[cols="1,2",options="header"]
-|===
-|Profile |Wire format
-|`legacy` (default) |Unversioned Base64 JSON, readable by older library releases.
-|`json` |`flow-id:1:json:` followed by readable JSON.
-|`gzip` |`flow-id:1:gzip:` followed by Base64 of gzipped JSON.
-|===
-
-For example, use `-Dinqwise.context.flow-id.codec=json` for readable metadata.
-Every new reader accepts all three profiles regardless of its own writer setting.
-Upgrade readers before enabling versioned writers: older releases only understand `legacy`.
-Wire-level removal requires updated readers even when using the legacy value codec. Older readers cannot interpret the removal marker; optional propagation error handling keeps delivery running but cannot preserve removal across those nodes.
-Compression precedes Base64 encoding; gzip can increase the size of short IDs and is therefore opt-in.
-Timestamps retain millisecond precision. Decoded JSON payloads are limited to 64 KiB, including after decompression; oversized headers, unknown versions/codecs, and corrupt compressed input are rejected.
-Wire timestamps must be signed 64-bit JSON integers, or null/absent. Fractional, floating-point, exponent, and overflowing representations are rejected rather than narrowed to a different millisecond value; this includes forms such as `1.0` and `1e3`. All timestamp encodings produced by the library's legacy, JSON, and gzip writers remain compatible. This validation applies to wire decoding only; the public `FlowId(JsonObject)` constructor is unchanged.
-Configured JSON codecs may represent integer tokens as `Byte`, `Short`, `Integer`, `Long`, or `BigInteger`; all are accepted only within the signed 64-bit range. Isolated JSON-SPI tests verify alternate integer representations, boundary timestamps, missing/null fields, and rejection of malformed forms across all three wire profiles without changing the parent JVM's JSON configuration.
-All readers validate UTF-8 before JSON parsing, including legacy Base64 and decompressed gzip payloads. Readable JSON envelopes also reject raw unpaired Java surrogates before encoding rather than silently replacing them. Malformed metadata is reported without stopping EventBus payload delivery; valid legacy wire formats and supplementary Unicode characters remain supported.
-Identifiers are also checked after JSON unescaping, so escaped lone surrogates cannot bypass Unicode validation. Writers reject IDs containing unpaired Java surrogates before JSON encoding. Valid surrogate pairs and escaped control characters retain their exact content, while custom textual representations are snapshotted once before validation and immutable FlowId construction.
-Metadata propagation is optional by default. Codec and transport-level failures are reported as a sanitized `ContextPropagationException` through the captured context's exception handler, falling back to `vertx.exceptionHandler(...)` or default logging.
-During service discovery, unloadable providers are skipped with a warning that excludes the original error message and cause details. Successfully loaded providers are cached; if discovery cannot enumerate further entries, it retains those already loaded. Restart after correcting service registration or provider configuration.
-Discovery warnings are best effort too: recoverable logger failures cannot prevent healthy providers from loading, alter duplicate/invalid-key selection, or bypass the 64-consecutive-failure limit. Isolated failing-appender tests exercise each warning path without changing provider discovery's VM-fatal error policy.
-Codec discovery uses the library's defining classloader, matching default-configuration discovery. The first caller's thread context classloader cannot select or disable codecs for later flows. Custom codec classes and their `META-INF/services/com.inqwise.context.spi.ContextChainDataService` registrations must be visible to the library classloader. Applications that previously exposed registrations only through a plugin TCCL must move those registrations to that loader's classpath or load a separate library instance within the plugin classloader.
-Each provider must declare a stable, non-blank header key. Discovery keeps the first valid registration for a header, ignoring case when detecting conflicts. Providers with conflicting or unusable keys are skipped with a warning; the selected key retains its original spelling in `Storage`.
-Recoverable ServiceLoader iteration and instantiation failures are skipped with sanitized warnings, including runtime, linkage, assertion, and service-configuration failures. Discovery stops after 64 consecutive failures without an instantiated candidate, preventing a non-advancing iterator from retrying indefinitely. Successfully instantiated candidates reset that budget; earlier valid registrations remain available in the immutable result. A partial result is cached like normal discovery, so fix the provider/classpath configuration before restarting the application. Diagnostic cause accessors are guarded too, and warnings omit original messages and cause details. The retry loop does not catch VM-fatal errors.
-Assertions and nested service-discovery failures while reading a provider's key also cause that provider to be skipped, so an unusable registration cannot prevent discovery of later healthy codecs. The warning excludes the original error message and cause details.
-The report contains direction, provider class, failure type, and the original stack frames, but omits the original message and cause chain to avoid logging metadata payloads.
-Interceptors continue message delivery and process remaining providers after a provider failure. Even an exception thrown by the error observer does not stop delivery. Fallback logging is also best effort: recoverable logging failures are ignored without recursively reporting them or aborting healthy providers and payload delivery. If both reporting channels fail, the metadata failure may go undiagnosed; storage and transport behavior remain independent of diagnostic availability.
-Codec linkage failures, such as a missing lazily loaded dependency or failed class initialization, codec assertion failures, and nested service-discovery failures are isolated per provider. They are reported with that provider's identity without exposing the original message or cause, and healthy providers continue importing/exporting metadata. If copying the original stack trace fails or returns invalid data, the sanitized exception keeps its own reporting trace instead. A failed outbound codec does not send stale metadata for its key. This isolation applies to metadata work, not application handlers; their assertions retain the native client's normal error behavior.
-Inbound import requires exactly one header value per metadata key. Duplicate values, including a value paired with a removal marker or differently cased header names, are reported and not imported. When the provider preserves an existing local value or removal marker, incoming headers are ignored without decoding.
-When storage contains an explicit value or removal, its stale outgoing headers are cleared before encoding. If encoding fails, that key is omitted rather than sending an older value; local storage remains unchanged. Explicit headers for keys absent from storage remain available.
-Public typed storage access remains strict, while interceptors use explicit context-based storage access internally.
-
-An application that requires metadata should reject that message explicitly in its handler, making the failure visible in the caller's request future:
-
-[source,java]
-----
-if (FlowIdContext.get() == null) {
-    message.fail(422, "Required FlowId is missing");
-    return;
-}
-----
-
-This does not convert application or subsequent interceptor exceptions into optional propagation failures.
-
-`ClusteredFlowIdTransportTest` starts three Vert.x nodes in a private Hazelcast cluster, using loopback TCP and ephemeral ports with multicast and automatic discovery disabled.
-Consumers exist only on the receiving node, so requests and replies cross the clustered EventBus network transport.
-The 55 cases cover every sender/receiver codec pair, unchanged and replaced remote values, failure replies, overlapping flows, messages without metadata, and generated ServiceProxy calls across three deployed verticles.
-All three profiles round-trip a 64 KiB UTF-8 JSON payload over TCP. Codec tests also reject payloads one byte over the limit and gzip streams with truncated or damaged trailers.
-They also cover removal, stale-header suppression, explicit re-addition, and removal while a network reply is pending.
-Removal markers are checked across three nodes and on return to both empty callers and callers with existing values.
-They assert distinct remote instances with matching values and preservation of the caller's original instance.
-All nodes in this class run in one test JVM; separate-process coverage is provided below. Neither suite covers TLS, node loss, or network partitions.
-Run this coverage with `mvn -Dtest=ClusteredFlowIdTransportTest test`; it is also included in the standard test suite and closes its nodes after execution.
-
-The ServiceProxy scenarios run on event-loop and worker verticles, with legacy, JSON, and gzip writers on A, B, and C respectively:
-
-[source,text]
-----
-A adds flow-A -> B receives flow-A, replaces with flow-B -> C receives flow-B, replaces or removes it
-A retains flow-A <- B retains flow-B <- C replies or fails
-----
-
-The tests assert values and local object identity at every stage, without manual context wrappers inside the verticles.
-The test-only service interface is processed during test compilation; generated proxy and handler sources under `src/test/generated` are excluded from version control.
-
-`ForkedClusterFlowIdTransportTest` deploys the same generated ServiceProxy contract across three JVMs: A runs in the test process, B is an event-loop verticle in a JSON-writing child JVM, and C is a worker verticle in a gzip-writing child JVM. A writes legacy values.
-Its six scenarios cover unchanged values, replacement, removal, forwarding an existing removal, explicit re-addition, and failure replies.
-Three additional repeated cases each launch a batch of 12 concurrent calls mixing all six scenarios. A test-only barrier confirms all 12 requests overlap on both remote nodes before allowing replies, with bounded waits through per-request timers rather than blocking the event loop or worker.
-Six further cases deploy callers on event-loop, worker, and virtual-thread verticles. Each caller replaces or removes its FlowId while a ServiceProxy call is pending; concurrent remote replacements, removals, and failure replies preserve that newer local state, including its object identity or removal marker after a subsequent timer. The remote reports still contain the original request's serialized FlowId rather than the caller's later mutation.
-Unique request tokens and timestamps detect cross-request leakage, and each node verifies local object identity after its timer and downstream return, including failure paths.
-The tests verify distinct process IDs, incoming request and reply headers, timestamps, and preservation of local instances on return, including a subsequent timer callback.
-Each child has independent provider discovery and JVM codec configuration; there is no shared Java heap between nodes.
-The fixture uses a private loopback Hazelcast cluster with ephemeral ports and bounded readiness waits. It closes child stdin for graceful shutdown, checks normal exit, and forcibly terminates any child that exceeds its shutdown timeout.
-Run just this coverage with `mvn -Dtest=ForkedClusterFlowIdTransportTest test`; it also runs in the standard test suite and requires permission to launch Java child processes and bind loopback ports.
+link:eventbus.adoc[EventBus and ServiceProxy behavior, whole-value replacement/removal, codec profiles, discovery, and error reporting].
 
 == Collection Transport Coverage
 
-`ContextCollectionsIntegrationTest` registers external map/set/list codecs and factories in isolated child JVMs. Its core-only runtime exercises EventBus and direct carrier operations without optional clients or JUnit. A separate runtime includes WebClient but excludes Kafka and JUnit, exercising all three collection types over HTTP/1.1, HTTP/2 upgrade and prior knowledge with both Vert.x implementations, and direct HTTP/3 over QUIC. Request and response versions are asserted, so protocol fallback cannot satisfy the tests. HTTP/3 uses a temporary certificate explicitly trusted by the client with hostname verification enabled; it requires the same platform-native QUIC runtime as the generic HTTP/3 tests.
-
-HTTP cases run on event-loop, worker, and virtual-thread callers with each FlowId writer profile. A handshake delays the server response until the caller has changed its own collections, proving that the wire request remains the send-time snapshot while return import applies the codecs' whole-item replacement policy.
-
-[cols="1,2",options="header"]
-|===
-|Sent collection state |Server behavior and caller result
-|Values |Server changes map entries, set membership, and list positions/duplicates. Returned snapshots replace the caller's in-flight changes; older captured snapshots remain unchanged.
-|Present empty |Server receives typed empty values, then removes the whole items. Returned removal markers replace the caller's newer populated collections.
-|Explicit removal |Server imports and verifies the marker state without factory revival, then explicitly replaces it. Returned values replace the caller's independently reintroduced snapshots.
-|Absent |Server receives no collection item or removal marker. Explicit server replacements return normally; neither missing headers nor import invokes initialization factories.
-|===
-
-The server also replaces its FlowId before replying. The caller retains its existing FlowId instance, including an in-flight local replacement or removal marker, independently of collection return policies. Request/response and timer callbacks retain their original contexts and current item references. Private storage is neither exported nor leaked between sequential requests on the shared client, and ordinary payloads/application headers remain unchanged. Responses carrying metadata retain `Cache-Control: no-store`.
-
-A Kafka-only child excludes WebClient and JUnit and uses the Vert.x producer with Kafka's native `MockProducer`. For each caller threading model and FlowId writer profile, it sends values, present-empty collections, explicit removal markers, and absent metadata through two scoped consumer handlers. The producer changes its collections immediately after sending; the first consumer still receives the send-time snapshot. That consumer either edits/replaces all three collections or removes them, then forwards another record. The second consumer verifies decoded values, list order/duplicates, or removal markers before making its own local changes. Nested dispatch restores the first consumer's context and stored references; asynchronous completion and timers preserve the producer's newer snapshots and original FlowId. Private storage stays local, and imports do not invoke initialization factories. These are one-way deliveries: acknowledgments never import consumer changes back into the producer.
-
-Kafka records are transferred from mock-producer history into native consumer records with copied header bytes. No broker, polling loop, partition assignment, or broker-side delivery guarantee is exercised. Run the local collection runtimes with `mvn -Dtest=ContextCollectionsIntegrationTest test`; no external services are required.
-
-`ForkedClusterCollectionsTransportTest` uses three JVMs in a private loopback Hazelcast cluster: caller A, worker B, and worker C. The caller explicitly installs the external collection codecs, while both children discover them through SPI; FlowId writers use legacy, JSON, and gzip respectively. Direct request/reply cases use A/B. All three caller threading models send values, typed empty collections, removal markers, and absent metadata to B. Replies either replace all three collections (including edited entries, membership, and list order/duplicates) or remove them. The caller changes its collections and replaces/removes its FlowId after sending: returned collections follow their whole-item replacement policy, while the newer caller FlowId or removal marker survives. Tests verify process IDs, timer/context identity, unchanged older caller snapshots, private-storage isolation between sequential requests, and no factory calls on remote import.
-
-Overlapping clustered cases run two eight-request batches per caller threading model. Each batch mixes all four incoming states with returned replacement/removal, using a distinct token for every request. The remote worker waits until all eight requests arrive before any reply can complete; every response must report eight peers. Each request retains its own timer context, incoming snapshots/removal state, FlowId, and private item while waiting. Caller assertions verify returned data against its own token, current FlowId/removal, unchanged older snapshots, and private storage. Successful caller deployments are undeployed after the joined batch, and the child checks that no batch state remains at shutdown.
-
-The same remote worker also registers the generated `ClusterFlowService` through `ServiceBinder`. Collection-specific ServiceProxy cases use `ServiceProxyBuilder` and the generated client/handler over the network, not a hand-written proxy double. They repeat all 24 state/model/replacement-or-removal cases and six coordinated eight-call batches. Both entry points share the remote scenario implementation and the caller's context, snapshot, FlowId, and timer assertions; the direct EventBus path additionally inspects reply headers for private metadata. ServiceProxy results are JSON reports encoded as strings, keeping collection metadata outside the application payload.
-
-Service failure cases repeat the 24-case matrix after the remote worker changes its collections and FlowId, then returns a controlled `ServiceException`. The caller verifies the actual failed future, recipient-failure type, error code, report token, and callback context before inspecting metadata. Returned collection replacements/removals still replace pending caller snapshots, independently of its newer FlowId value/removal and private storage. Six further sixteen-call batches mix successful and failed service calls, with both collection outcomes for every incoming state. Every call waits for all sixteen peers, and failure callbacks, normalized test-report continuations, and timers retain the proper caller context. Expected errors are decoded into reports only by the test harness; the generated service's future remains failed. Child batch cleanup includes failed calls.
-
-Twenty-four additional A/B cases hold a remote service reply until the caller observes native `TIMEOUT`. A test-only control endpoint confirms remote arrival, releases the held context after expiration, and reports actual map/set/list and FlowId headers captured at late outbound dispatch. Control replies explicitly carry no managed metadata, so coordinating the test cannot replace caller snapshots. The late reply contains either edited collection replacements or whole-item removals, plus a remote FlowId replacement; the expired caller retains its current collection references, FlowId value/removal, and private item. A subsequent generated service call inspects the caller's current values, emptiness, removals, or absence in B before replying normally. Timers retain the resulting caller references, and child shutdown checks that held replies and captured headers were consumed. These cases cover all three caller threading models, but do not claim overlapping timeouts, late service errors, or broker/network-failure recovery.
-
-Forty-eight A -> B -> C ServiceProxy cases exercise forwarding and return through all three JVMs, across incoming states, caller threading models, final replacement/removal, and success/failure. B replaces values, removes a present value, explicitly reintroduces a removed item, or creates a previously absent item according to the scenario; it also forwards typed empty values and existing removal markers. C validates the actual forwarded state, changes its collections and FlowId, and replies normally or with the controlled service error. Returned collections replace B's sent snapshots and then A's pending snapshots, while B retains its own newer FlowId and A retains its current value/removal. Private items never cross either hop, and both child process IDs and timers are verified. Service errors retain their code through both generated proxy boundaries.
-
-The clustered fixture uses bounded readiness/shutdown waits, ephemeral ports, and forced child cleanup on timeout, including partial startup failures. Run it with `mvn -Dtest=ForkedClusterCollectionsTransportTest test`; child JVMs and loopback port binding must be permitted. Cluster TLS, node loss, partitions, and concurrent multi-hop failure recovery are separate integration concerns, not claims of this fixture.
-
-`ServiceProxyCollectionsTimeoutTest` separately installs the external collection codecs for local generated-ServiceProxy tests, without changing global SPI registration. Twelve no-handler cases preserve values, typed empty collections, removals, and absent metadata on all three caller threading models. Twenty-four timeout cases hold the server promise until the caller observes native `TIMEOUT`, then release either replacement values or removal markers. An outbound interceptor inspects the actual late map/set/list and FlowId headers, proving that the server exported metadata even though the expired call cannot import it. Caller snapshot references, current FlowId value/removal, and private storage survive timeout and late dispatch. The next service call verifies the caller's current collection contents/removal/absence rather than the late server state; its ordinary reply may decode fresh collection wrappers under their replacement policy, and timers retain those returned references. These are local EventBus timeout/late-reply checks, not additional clustered timeout coverage. Run them with `mvn -Dtest=ServiceProxyCollectionsTimeoutTest test`.
-
-`CollectionCodecTransportTest` adds twelve Unicode/empty/removal round trips through the HTTP and Kafka carriers and 152 rejection/recovery cases through the HTTP carrier and transport engine. The external example codecs reject unsupported versions, malformed JSON, wrong container shapes, non-string/null elements, duplicate metadata headers, and duplicate set elements (list duplicates remain valid). Rejection preserves the exact prior value, empty wrapper, removal marker, or absence, continues healthy FlowId import, and permits the next valid collection import. Error diagnostics omit private text and cause chains even when the context error observer throws. These are codec/carrier boundary tests, not malformed-payload injection into every network protocol.
+link:testing.adoc#_collection_transport_coverage[Collection test scenarios, matrices, and coverage limits]. For application usage, choose link:context-maps.adoc[maps], link:context-sets.adoc[sets], or link:context-lists.adoc[lists].
 
 === Collection Test Matrix
 
-[cols="1,2",options="header"]
-|===
-|Boundary |Deterministic coverage
-|Typed storage |Immutable map/set/list snapshots, declaration checks, atomic operations, concurrent writers, lifecycle and factories.
-|Runtime discovery |Core-only, HTTP-only, and Kafka-only forked applications; external codecs/factories and all FlowId profiles.
-|HTTP |Six wire modes across HTTP/1.1, HTTP/2, and HTTP/3; all caller models and collection states, in-flight edits and return policies.
-|Kafka |Mock producer to two scoped consumers; copied header bytes, edits/removals forwarded without acknowledgment back-propagation.
-|Cluster |A/B direct and generated proxy paths, overlapping success/error batches, coordinated late replies, and A/B/C forwarding with success/error returns.
-|Codec rejection |Valid HTTP/Kafka carrier round trips and malformed collection envelopes with prior-state preservation, isolated diagnostics, and recovery.
-|===
-
-Live Kafka brokers, real Redis/Elasticsearch deployments, node/network failures, and every optional client feature are outside this bounded collection test pass. The separate client-compatibility tests below retain their own success/failure and instance-continuity coverage.
+link:testing.adoc#_collection_test_matrix[Collection transport coverage matrix].
 
 == Client Context Compatibility
 
-The compatibility tests check that a stored `ContextChainDataItem` remains the exact same Java object in the calling context and its asynchronous continuations.
-They cover success, failure, fallback, timeout, and overlapping calls where applicable, using transport doubles and loopback servers without external services.
-
-Deployment checks cover event-loop, worker, and virtual-thread models for storage/EventBus call-and-return, HTTP request isolation, Kafka record-handler exception/context restoration, and timers. Timer deployment tests include one-shot callbacks, timer futures, cancellation, and bound periodic callbacks. Virtual-thread checks assert both the context threading model and `Thread.isVirtual()` rather than relying only on deployment success. Clustered ServiceProxy and the other client scenarios retain their separately documented coverage; virtual-thread coverage is not claimed for every client operation.
-
-Local generated-ServiceProxy tests cover native `NO_HANDLERS` and `TIMEOUT` failures on all three threading models with caller values, removal markers, and empty storage. Replies deliberately completed after timeout still export their metadata, but cannot import it into the expired caller. Subsequent calls start with the caller's unchanged state rather than the late reply's value or removal; failure and timer callbacks retain the original caller context.
-
-Imperative virtual-thread tests also exercise `Future.await(...)` and `future.await()` for EventBus request/reply, WebClient, bound foreign results, and timers, including failures and cancellation. They verify context and stored-instance retention after resumption, plus value/removal policy and response-header import when HTTP body decoding fails. Foreign results start incomplete and are completed by a task queued behind the awaiting task. Use these imperative await patterns in virtual-thread verticles, not to block event-loop or worker handlers; awaiting a result does not make unrelated foreign callbacks context-aware.
-
-[cols="1,2",options="header"]
-|===
-|Client or extension |Tested behavior
-|Vert.x ServiceProxy 5.2.3 |Native no-handler and timeout failures preserve caller state; late replies do not update an expired caller or leak into subsequent calls. Clustered request/reply coverage is described above.
-|Vert.x Kafka producer 5.2.3 |Send success, submission and acknowledgment failures, and overlapping acknowledgments preserve the caller's instance.
-|Vert.x Kafka consumer 5.2.3 |Shared-consumer assignment and polling need `ContextPropagation.bind` to resume on the caller's context, on success and failure.
-|Vert.x Redis client 5.2.3 |Success, Redis errors, disconnects, and overlapping pooled calls preserve the caller's instance.
-|Vert.x WebClient 5.2.3 |HTTP responses, disconnects, and overlapping requests preserve the caller's instance.
-|Vert.x CircuitBreaker 5.2.3 |Operation completion, failure recovery, fallback, timeout, and context updates returned to the caller preserve object identity.
-|Vert.x timers 5.2.3 |One-shot callbacks and timer futures preserve object identity on completion and cancellation. Periodic ticks use fresh contexts and need `ContextPropagation.bindHandler`; adapted ticks and isolated flows retain the caller's instance.
-|Elasticsearch Java async client 8.15.3 |A controlled transport completes on a foreign thread; `ContextPropagation.bind` preserves the caller's instance on success and failure.
-|===
-
-Bind results before attaching application continuations, from within the originating Vert.x context:
-
-[source,java]
-----
-ContextPropagation.bind(elasticsearch.ping())
-    .onSuccess(response -> use(FlowIdContext.get()));
-
-ContextPropagation.bind(sharedKafkaConsumer.poll(Duration.ofMillis(100)))
-    .onSuccess(records -> use(FlowIdContext.get()));
-
-vertx.setPeriodic(1000, ContextPropagation.bindHandler(timerId ->
-    use(FlowIdContext.get())));
-----
-
-The adapter rebinds the result to the calling context; it does not make raw client threads context-aware or attach metadata to protocol messages.
-Object identity is a same-JVM guarantee. Transport across process boundaries requires serialization and creates a new instance on the receiving side.
-These tests validate client integration at the mocked or loopback boundary, not compatibility with deployed Kafka, Redis, or Elasticsearch servers.
+link:usage.adoc#_timers_and_external_callbacks[Practical binding examples] and link:testing.adoc#_client_context_compatibility[tested client behavior and boundaries].
 
 == Gates
 
-A Gate represents a logical point where the default data transport mechanism is either unsupported or would disrupt the transportation flow.
-
-The EventBus gate serializes registered metadata into message headers and reads it on receipt.
-Automatic protocol-level metadata transport is not implemented for:
-- Kafka clients other than the opt-in Vert.x adapter documented above
-- Elasticsearch clients
-- Redis clients
-- HTTP clients other than the opt-in WebClient/server adapter documented above
-
-This is separate from the same-JVM context continuity tested above.
-CircuitBreaker does not need a wire-transport gate; its call, fallback, and return paths retain context as described in the compatibility table.
+EventBus transports registered metadata automatically; HTTP and Kafka have opt-in adapters. Redis, Elasticsearch, and other unsupported protocols need an application integration if metadata must cross the wire. Binding a callback only restores local execution context. See link:usage.adoc#_connect_services[service integration examples] and link:transport-configuration.adoc#_carrier_transport[custom carriers].
 
 == Data Items
 
-`ContextChainDataItem` is the marker interface for stored metadata. A `ContextChainDataService` supplies its wire codec and inbound replacement policy; declaring an item or typed slot alone does not enable transport.
+`ContextChainDataItem` marks an application-owned metadata type. `ContextChainDataService` supplies its wire codec and inbound policy. Start with the link:usage.adoc#_your_own_typed_item[typed item example], then the link:advanced.adoc#_write_a_codec[codec example].

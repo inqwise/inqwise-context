@@ -1,0 +1,243 @@
+= Practical Guide
+:toc:
+:toclevels: 2
+
+link:../README.adoc[Quick start] | link:advanced.adoc[Expert guide] | link:index.adoc[All documentation]
+
+Start with the link:../README.adoc#_quick_start[runnable request/reply example]. This guide builds on it, one use case at a time. Unless shown as a complete class, Java snippets belong inside your application's deployed verticle callbacks or handlers. Client objects and service proxies are assumed to be configured by the application.
+
+== FlowId In Application Code
+
+=== Start And Read A Flow
+
+At the start of an operation, initialize an identity explicitly:
+
+[source,java]
+----
+FlowId flow = FlowIdContext.getOrCreate();
+System.out.println("Starting " + flow.getId());
+----
+
+Deeper in the call chain, read it without adding another method parameter:
+
+[source,java]
+----
+FlowId flow = FlowIdContext.require();
+System.out.println("Processing " + flow.getId());
+----
+
+Use `get()` instead of `require()` when metadata is optional: it returns `null` if absent. Neither read creates a value. Initialize at a flow boundary, not on every helper call.
+
+=== Use Your Own Identifier
+
+[source,java]
+----
+FlowIdContext.put(FlowId.builder().withId("order-42").build());
+----
+
+`FlowId` is immutable. A `put` replaces the whole value; it does not update or merge individual fields. To retain existing fields while changing the ID:
+
+[source,java]
+----
+FlowId current = FlowIdContext.require();
+FlowIdContext.put(FlowId.builderFrom(current).withId("order-43").build());
+----
+
+=== Remove An Identifier
+
+[source,java]
+----
+FlowId previous = FlowIdContext.remove();
+FlowId absent = FlowIdContext.get(); // null
+
+FlowIdContext.put(FlowId.builder().withId("new-operation").build());
+----
+
+Removal is explicit state, not an invitation to generate another ID. After removal, `getOrCreate()` refuses to recreate it; use `put()` to reintroduce it intentionally.
+
+Replacement and removal travel on later calls. Neither rewrites metadata already sent. FlowId protects an existing caller identity or removal marker from returned changes:
+
+[source,text]
+----
+A has flow-A -> B replaces with flow-B -> C receives flow-B
+A keeps flow-A <- B keeps flow-B <- C replies or removes its FlowId
+----
+
+== Connect Services
+
+=== EventBus And ServiceProxy
+
+There is no adapter to install for EventBus or generated ServiceProxy calls. Once the library is available on each node, registered codecs export metadata before a send and import it before a receiver runs. Clustering itself is configured by your application.
+
+For an already initialized proxy named `orders`, the call site is ordinary application code:
+
+[source,java]
+----
+FlowIdContext.getOrCreate();
+orders.submit("order-42")
+    .onSuccess(result ->
+        System.out.println("Completed " + FlowIdContext.require().getId()));
+----
+
+The service implementation reads the same ID with `FlowIdContext.require()`. Its own downstream calls carry its current value. It may replace or remove that value without overwriting the caller's existing FlowId when returning.
+
+The proxy's service methods and initialization are application-owned; the snippet assumes `submit(String)` returns a Vert.x `Future`. See link:eventbus.adoc[EventBus details] for codec profiles, clustering, and error handling.
+
+=== Internal HTTP With WebClient
+
+Add the aligned `io.vertx:vertx-web-client` dependency in your application. On the client, allow the exact internal origin once, then keep using WebClient normally:
+
+[source,java]
+----
+HttpContextTransport.install(client, URI.create("http://orders.internal:8080"));
+----
+
+For each operation, send from its deployed callback or handler:
+
+[source,java]
+----
+FlowIdContext.getOrCreate();
+client.getAbs("http://orders.internal:8080/orders/42").send()
+    .onSuccess(response ->
+        System.out.println("Completed " + FlowIdContext.require().getId()));
+----
+
+On the server, wrap the request handler before starting the server:
+
+[source,java]
+----
+vertx.createHttpServer()
+    .requestHandler(HttpContextTransport.handler(request -> {
+        FlowId flow = FlowIdContext.get();
+        String id = flow == null ? "no-flow" : flow.getId();
+        request.response().end("Processed " + id);
+    }))
+    .listen(8080);
+----
+
+The server receives isolated request storage. Response headers carry its current metadata back, subject to the item's return policy. FlowId preserves an existing caller value.
+
+Install transport on the final client after creating sessions and any header/routing interceptors. Do not replace the server's `headersEndHandler`. Origins are exact scheme/host/port entries, with no wildcards; configured proxies do not propagate metadata. These adapters target trusted internal boundaries, not every WebClient routing mode. See link:http.adoc[HTTP reference] for HTTPS, HTTP/2, HTTP/3, and restrictions.
+
+=== Kafka Producer To Consumer
+
+Add the aligned `io.vertx:vertx-kafka-client` dependency in your application. Wrap the producer once, allowing exact topic names:
+
+[source,java]
+----
+var sender = KafkaContextTransport.sender(producer, "orders");
+
+FlowIdContext.getOrCreate();
+sender.send(KafkaProducerRecord.create("orders", "order-42", "created"))
+    .onSuccess(metadata ->
+        System.out.println("Sent " + FlowIdContext.require().getId()));
+----
+
+Wrap the consumer's record handler:
+
+[source,java]
+----
+consumer.handler(KafkaContextTransport.handler(record -> {
+    FlowId flow = FlowIdContext.get();
+    System.out.println("Received " + (flow == null ? "no-flow" : flow.getId()));
+}, "orders"));
+----
+
+Each record gets isolated library storage. A consumer can update metadata before forwarding another record. Consumer changes do *not* return through the producer's acknowledgment: Kafka delivery is not request/reply.
+
+The application still owns subscription, commits, retries, ordering, and client lifecycle. Topic allowlists control metadata, not access to Kafka. See link:kafka.adoc[Kafka reference].
+
+== Timers And External Callbacks
+
+One-shot Vert.x timer callbacks retain context. Bind a periodic handler from the originating context when it must keep that flow:
+
+[source,java]
+----
+FlowIdContext.getOrCreate();
+long timerId = vertx.setPeriodic(1000, ContextPropagation.bindHandler(id ->
+    System.out.println("Tick for " + FlowIdContext.require().getId())));
+// Cancel timerId with vertx.cancelTimer(timerId) when its owner stops.
+----
+
+For an external client returning a `CompletionStage`, bind its result *before* adding application callbacks, while still in the originating Vert.x context:
+
+[source,java]
+----
+ContextPropagation.bind(elasticsearch.ping())
+    .onSuccess(response ->
+        System.out.println("Ping for " + FlowIdContext.require().getId()));
+----
+
+Binding returns execution to the captured context. It does not attach metadata to Elasticsearch or Redis requests and cannot capture a context from an ordinary Java thread. Bind before leaving the flow, not after it has been lost. See link:testing.adoc#_client_context_compatibility[client compatibility and its tested boundaries].
+
+== Add Application Metadata
+
+=== Your Own Typed Item
+
+Declare a type and a shared handle once. For example, put this in `example/TenantContext.java`:
+
+[source,java]
+----
+package example;
+
+import com.inqwise.context.ContextSlot;
+import com.inqwise.context.ContextSlots;
+import com.inqwise.context.spi.ContextChainDataItem;
+
+public final class TenantContext {
+    public record Tenant(String id) implements ContextChainDataItem {
+        public Tenant {
+            if (id == null || !id.matches("[A-Za-z0-9_-]{1,64}")) {
+                throw new IllegalArgumentException("Invalid tenant ID");
+            }
+        }
+    }
+
+    public static final ContextSlot<Tenant> VALUE =
+        ContextSlots.define("tenant", Tenant.class);
+
+    private TenantContext() {
+    }
+}
+----
+
+Application code uses the declared type, without repeated keys or casts:
+
+[source,java]
+----
+TenantContext.VALUE.put(new TenantContext.Tenant("tenant-a"));
+TenantContext.Tenant tenant = TenantContext.VALUE.require();
+----
+
+This is enough for storage in the current context. To send the item to another context or process, add the link:advanced.adoc#_write_a_codec[codec from the expert guide]. Declaring a slot alone does not enable wire transport. A tenant value is metadata, not proof of authorization.
+
+=== Maps, Sets, And Lists
+
+Use a typed collection when several small values belong together:
+
+Declare this shared handle as a field in your application class:
+
+[source,java]
+----
+static final ContextMap<String, String> ATTRIBUTES =
+    ContextMaps.define("attributes", String.class, String.class);
+----
+
+Inside a deployed handler, initialize and use the current flow's entries:
+
+[source,java]
+----
+ATTRIBUTES.getOrCreate();
+ATTRIBUTES.put("region", "eu");
+ATTRIBUTES.put("operation", "checkout");
+Map<String, String> snapshot = ATTRIBUTES.snapshot();
+ATTRIBUTES.remove("operation");
+----
+
+Snapshots do not change when later operations edit the collection. Elements should be immutable; snapshot copying is shallow. Initialize explicitly before entry operations, and register a codec if the collection needs to cross a service boundary.
+
+Choose a link:context-maps.adoc[map] for key/value entries, a link:context-sets.adoc[set] for unique membership, or a link:context-lists.adoc[list] for ordered values including duplicates. Each guide shows initialization, operations, removal, and extension points.
+
+== Next: Customize The Library
+
+The link:advanced.adoc[expert guide] explains atomic updates, codec registration, return policies, factories, and shared transport configuration. Use the link:reference.adoc[detailed reference] only when you need the exact contract or protocol limits.

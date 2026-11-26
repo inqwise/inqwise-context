@@ -2,6 +2,8 @@
 :toc:
 :toclevels: 2
 
+link:../README.adoc[Quick start] | link:usage.adoc[Practical guide] | link:advanced.adoc[Expert guide] | link:index.adoc[All documentation]
+
 `ContextList<E>` is a shared handle resolving the active Vert.x context, not a mutable `java.util.List`. Its stored `ContextListItem<E>` carries an immutable ordered snapshot, preserving duplicates and the declared element type even when empty. It follows the same explicit lifecycle as link:context-maps.adoc[maps] and link:context-sets.adoc[sets].
 
 == Declare And Initialize
@@ -128,21 +130,4 @@ Returned snapshots/removals follow the codec's `replaceExistingOnInbound()` poli
 
 == Validation
 
-Tests cover immutable input copies and list views, order and duplicate retention, bounds failures without partial mutation, raw element/declaration misuse, lifecycle rules, and factory matching. Concurrent public appends verify 264 retained positions, eight duplicate elements, distinct assigned indexes, and each writer's relative sequence, using Vert.x-managed tasks.
-
-The shared map/set/list forked fixture discovers real external codecs and factories without optional clients or JUnit. It exercises EventBus request/reply, ordered duplicates, empty snapshots, whole-item removal/reintroduction, timer identity, caller FlowId preservation, and direct HTTP-carrier snapshots across all three deployment modes and FlowId writer profiles.
-
-Separate loopback HTTP tests use real WebClient/server exchanges over HTTP/1.1, HTTP/2 upgrade/prior knowledge with both implementations, and trusted-TLS HTTP/3, asserting actual wire versions. They verify sequence/duplicate retention, in-flight caller edits, returned whole-list replacement/removal, absence, private storage isolation, and timer identity. See link:reference.adoc#_collection_transport_coverage[collection transport coverage] for the matrix and limits.
-
-Kafka-only tests use the native mock producer to verify send-time list snapshots, positional edits and duplicates, and whole-list removals forwarded across two consumer scopes. Producer acknowledgments retain the producer's newer list rather than importing consumer changes. No live broker is exercised.
-
-A separate multi-JVM Hazelcast fixture validates list order/duplicates, typed empty lists, removal markers, and absence over the network. Returned whole-list replacements/removals overwrite pending caller edits while older snapshots stay unchanged. Coordinated eight-request batches verify per-request sequence/duplicate retention and removal isolation across all caller threading models. Direct EventBus and generated ServiceProxy success paths run this matrix against a remote worker. Controlled ServiceProxy failures also return list replacements/removals; sixteen-call mixed success/failure batches verify per-request sequences and native error semantics. Coordinated clustered timeout cases inspect actual late list headers and preserve the expired caller's references and current sequence/removal/absence on the next remote call. Three-JVM forwarding also verifies middle-node replacement, removal, creation/reintroduction, and sequence retention through successful/failed returns.
-
-Separate local generated-ServiceProxy tests cover native no-handler failures, timeouts, and deliberately late list replacements/removals. They inspect late wire headers, preserve the expired caller's snapshot references, and verify current order/duplicates or removal/absence on the next call across all three caller threading models. They do not add clustered timeout coverage.
-
-Codec/carrier tests preserve list duplicates and reject malformed/versioned envelopes, wrong shapes, null/non-string elements, and duplicate metadata headers. Invalid input leaves prior storage intact, healthy metadata still imports, and a valid retry recovers even with a throwing error observer. Unicode/empty/removal round trips use both HTTP and Kafka carriers.
-
-[source,shell]
-----
-mvn -Dtest=ContextListTest,ContextCollectionsIntegrationTest,ContextItemFactoriesTest test
-----
+See link:testing.adoc#_list_storage_and_codec_coverage[tests and coverage boundaries]. Test setup and matrices are not required to use this collection.

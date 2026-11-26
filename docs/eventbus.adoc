@@ -1,0 +1,99 @@
+= EventBus And FlowId Reference
+:toc:
+:toclevels: 2
+
+link:../README.adoc[Quick start] | link:usage.adoc[Practical guide] | link:advanced.adoc[Expert guide] | link:index.adoc[All documentation]
+
+This is the detailed contract reference. For an installation walkthrough and short examples, use the link:usage.adoc[practical guide].
+
+== FlowId Wire Transport
+
+Storage access requires an active Vert.x context. Deployed verticle lifecycle callbacks and message handlers already provide one; no `runOnContext` wrapper is needed there.
+Calling a typed slot or `FlowIdContext` operation from an ordinary Java thread is an execution error and throws `IllegalStateException` rather than silently dropping metadata.
+A missing item within a valid context still returns `null`.
+
+`FlowId` is an immutable value containing an optional ID and timestamp.
+Wire identifiers must be JSON strings, or null/absent. Numbers, booleans, arrays, and objects are rejected instead of being converted to text. Empty strings, surrounding whitespace, and strings such as `"123"` or `"true"` retain their exact text. Textual `CharSequence` representations supplied by a configured JSON codec are captured as immutable strings. The public `FlowId(JsonObject)` constructor remains unchanged.
+The EventBus transport serializes it under `flow_id` and restores its values before the receiving handler runs.
+The receiving service gets a new Java instance with the same ID and timestamp; an existing `FlowId` in that context is preserved.
+Consequently, replies, including replies from a service that explicitly replaced its own stored value, do not overwrite the caller's original instance.
+`FlowIdContext.put(replacement)` remains available for intentional local replacement.
+Other data providers retain their previous inbound replacement behavior unless they opt out through `replaceExistingOnInbound()`.
+
+Replacement and removal change the current context and propagate on calls and replies, including inside a deployed ServiceProxy implementation:
+
+[source,java]
+----
+FlowId incoming = FlowIdContext.get();
+FlowId replacement = FlowId.builderFrom(incoming).withId("service-flow").build();
+FlowIdContext.put(replacement);
+
+FlowId removed = FlowIdContext.remove(); // returns replacement
+// Subsequent calls and replies carry removal instead of the old value.
+FlowIdContext.put(replacement); // explicitly re-add before the next call
+----
+
+Removal leaves a deletion marker: `FlowIdContext.get()` returns `null`, and incoming replies cannot silently restore it.
+`FlowId` transports this as `flow-id:1:remove:` under the same `flow_id` header for every codec profile, replacing stale explicit headers.
+Removal follows exactly the same inbound replacement policy as `put`: an empty receiving context imports and forwards the marker, while an existing `FlowId` or deletion marker is preserved.
+Thus a downstream removal travels back in a reply but does not erase a caller's existing `FlowId`, just as a downstream replacement does not overwrite it.
+An explicit local `FlowIdContext.put` re-adds a value and replaces the marker.
+Providers that allow inbound replacement apply incoming removals even to existing values; providers without removal encoding continue to omit the outgoing header.
+
+[source,text]
+----
+A removes -> B imports removal -> C imports removal
+A stays removed <- B stays removed <- C replies with removal
+
+A has flow-A -> B receives flow-A and removes it
+A retains flow-A <- B replies with removal
+----
+
+The writer profile is selected by the `inqwise.context.flow-id.codec` JVM property before creating Vert.x; the service captures it when constructed:
+
+[cols="1,2",options="header"]
+|===
+|Profile |Wire format
+|`legacy` (default) |Unversioned Base64 JSON, readable by older library releases.
+|`json` |`flow-id:1:json:` followed by readable JSON.
+|`gzip` |`flow-id:1:gzip:` followed by Base64 of gzipped JSON.
+|===
+
+For example, use `-Dinqwise.context.flow-id.codec=json` for readable metadata.
+Every new reader accepts all three profiles regardless of its own writer setting.
+Upgrade readers before enabling versioned writers: older releases only understand `legacy`.
+Wire-level removal requires updated readers even when using the legacy value codec. Older readers cannot interpret the removal marker; optional propagation error handling keeps delivery running but cannot preserve removal across those nodes.
+Compression precedes Base64 encoding; gzip can increase the size of short IDs and is therefore opt-in.
+Timestamps retain millisecond precision. Decoded JSON payloads are limited to 64 KiB, including after decompression; oversized headers, unknown versions/codecs, and corrupt compressed input are rejected.
+Wire timestamps must be signed 64-bit JSON integers, or null/absent. Fractional, floating-point, exponent, and overflowing representations are rejected rather than narrowed to a different millisecond value; this includes forms such as `1.0` and `1e3`. All timestamp encodings produced by the library's legacy, JSON, and gzip writers remain compatible. This validation applies to wire decoding only; the public `FlowId(JsonObject)` constructor is unchanged.
+Configured JSON codecs may represent integer tokens as `Byte`, `Short`, `Integer`, `Long`, or `BigInteger`; all are accepted only within the signed 64-bit range. Isolated JSON-SPI tests verify alternate integer representations, boundary timestamps, missing/null fields, and rejection of malformed forms across all three wire profiles without changing the parent JVM's JSON configuration.
+All readers validate UTF-8 before JSON parsing, including legacy Base64 and decompressed gzip payloads. Readable JSON envelopes also reject raw unpaired Java surrogates before encoding rather than silently replacing them. Malformed metadata is reported without stopping EventBus payload delivery; valid legacy wire formats and supplementary Unicode characters remain supported.
+Identifiers are also checked after JSON unescaping, so escaped lone surrogates cannot bypass Unicode validation. Writers reject IDs containing unpaired Java surrogates before JSON encoding. Valid surrogate pairs and escaped control characters retain their exact content, while custom textual representations are snapshotted once before validation and immutable FlowId construction.
+Metadata propagation is optional by default. Codec and transport-level failures are reported as a sanitized `ContextPropagationException` through the captured context's exception handler, falling back to `vertx.exceptionHandler(...)` or default logging.
+During service discovery, unloadable providers are skipped with a warning that excludes the original error message and cause details. Successfully loaded providers are cached; if discovery cannot enumerate further entries, it retains those already loaded. Restart after correcting service registration or provider configuration.
+Discovery warnings are best effort too: recoverable logger failures cannot prevent healthy providers from loading, alter duplicate/invalid-key selection, or bypass the 64-consecutive-failure limit. Isolated failing-appender tests exercise each warning path without changing provider discovery's VM-fatal error policy.
+Codec discovery uses the library's defining classloader, matching default-configuration discovery. The first caller's thread context classloader cannot select or disable codecs for later flows. Custom codec classes and their `META-INF/services/com.inqwise.context.spi.ContextChainDataService` registrations must be visible to the library classloader. Applications that previously exposed registrations only through a plugin TCCL must move those registrations to that loader's classpath or load a separate library instance within the plugin classloader.
+Each provider must declare a stable, non-blank header key. Discovery keeps the first valid registration for a header, ignoring case when detecting conflicts. Providers with conflicting or unusable keys are skipped with a warning; the selected key retains its original spelling in `Storage`.
+Recoverable ServiceLoader iteration and instantiation failures are skipped with sanitized warnings, including runtime, linkage, assertion, and service-configuration failures. Discovery stops after 64 consecutive failures without an instantiated candidate, preventing a non-advancing iterator from retrying indefinitely. Successfully instantiated candidates reset that budget; earlier valid registrations remain available in the immutable result. A partial result is cached like normal discovery, so fix the provider/classpath configuration before restarting the application. Diagnostic cause accessors are guarded too, and warnings omit original messages and cause details. The retry loop does not catch VM-fatal errors.
+Assertions and nested service-discovery failures while reading a provider's key also cause that provider to be skipped, so an unusable registration cannot prevent discovery of later healthy codecs. The warning excludes the original error message and cause details.
+The report contains direction, provider class, failure type, and the original stack frames, but omits the original message and cause chain to avoid logging metadata payloads.
+Interceptors continue message delivery and process remaining providers after a provider failure. Even an exception thrown by the error observer does not stop delivery. Fallback logging is also best effort: recoverable logging failures are ignored without recursively reporting them or aborting healthy providers and payload delivery. If both reporting channels fail, the metadata failure may go undiagnosed; storage and transport behavior remain independent of diagnostic availability.
+Codec linkage failures, such as a missing lazily loaded dependency or failed class initialization, codec assertion failures, and nested service-discovery failures are isolated per provider. They are reported with that provider's identity without exposing the original message or cause, and healthy providers continue importing/exporting metadata. If copying the original stack trace fails or returns invalid data, the sanitized exception keeps its own reporting trace instead. A failed outbound codec does not send stale metadata for its key. This isolation applies to metadata work, not application handlers; their assertions retain the native client's normal error behavior.
+Inbound import requires exactly one header value per metadata key. Duplicate values, including a value paired with a removal marker or differently cased header names, are reported and not imported. When the provider preserves an existing local value or removal marker, incoming headers are ignored without decoding.
+When storage contains an explicit value or removal, its stale outgoing headers are cleared before encoding. If encoding fails, that key is omitted rather than sending an older value; local storage remains unchanged. Explicit headers for keys absent from storage remain available.
+Public typed storage access remains strict, while interceptors use explicit context-based storage access internally.
+
+An application that requires metadata should reject that message explicitly in its handler, making the failure visible in the caller's request future:
+
+[source,java]
+----
+if (FlowIdContext.get() == null) {
+    message.fail(422, "Required FlowId is missing");
+    return;
+}
+----
+
+This does not convert application or subsequent interceptor exceptions into optional propagation failures.
+
+For clustered EventBus and generated ServiceProxy test coverage, see link:testing.adoc#_clustered_flowid_coverage[testing].
+
