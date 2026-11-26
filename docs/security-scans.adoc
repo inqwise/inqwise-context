@@ -1,5 +1,7 @@
 = Dependency Scan Triage
 
+link:../README.adoc[Quick start] | link:index.adoc[All documentation] | link:../SECURITY.md[Security policy]
+
 Reviewed on 2026-11-25 against the https://github.com/inqwise/inqwise-context/actions/runs/45609130362/attempts/2[PR #39 CI rerun].
 The initial failure was a Maven Central HTTP 429 response. The rerun completed NVD initialization and analysis with Dependency-Check 13.0.0, then failed the unchanged CVSS threshold of 7.
 
@@ -36,6 +38,14 @@ The https://github.com/hazelcast/hazelcast/issues/26597#issuecomment-4859599809[
 The published Community Maven artifact remains 5.7.0. Ordinary Maven dependency management cannot replace relocated classes inside that JAR. A https://github.com/hazelcast/hazelcast/issues/26601[separate unrelocated Maven artifact] has been requested upstream but is not assumed available. No Enterprise dependency, third-party fork, repacked JAR, or Jackson CVE suppression has been introduced. A future move of Hazelcast into a non-test scope would make its high findings blocking automatically.
 
 The earlier exact-version advisory query covered the resolved Maven graph. It did not inventory these shaded components; a zero-match result for that graph is not a security clearance for bundled code. The CI run also reported OSS Index disabled because credentials were absent, so no coverage from that analyzer is claimed.
+
+== Kafka Advisory Triage
+
+Reviewed on 2026-11-21: the CI OWASP report matches `kafka-clients:4.2.0` to `CVE-2026-41115` through the generic Apache Kafka CPE and rates it medium (CVSS 4.3), below the configured failure threshold of 7. The dependency graph supplies this client through the optional/provided Vert.x Kafka client; it does not supply a Kafka broker.
+
+The https://kafka.apache.org/community/cve-list/#CVE-2026-41115[Apache advisory] identifies a documentation/ACL discrepancy for `CONSUMER_GROUP_DESCRIBE` and confirms that `DESCRIBE` on `GROUP` is the correct authorization check. Operators must review broker group ACLs for least privilege; changing this library's client version alone does not perform that review. The adapter neither implements broker authorization nor manages ACLs, and its topic allowlist restricts metadata propagation, not Kafka access.
+
+No suppression or dependency override is applied for this finding. This assessment is specific to this advisory, not a security clearance for other Kafka findings or consuming deployments.
 
 == Local Validation
 

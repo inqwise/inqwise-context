@@ -1,0 +1,94 @@
+= Storage And Item Contracts
+:toc:
+:toclevels: 2
+
+link:../README.adoc[Quick start] | link:usage.adoc[Practical guide] | link:advanced.adoc[Expert guide] | link:index.adoc[All documentation]
+
+This is the detailed contract reference. For an installation walkthrough and short examples, use the link:usage.adoc[practical guide].
+
+== Typed Context Items
+
+Applications use type-specific accessors rather than string-keyed storage:
+
+[source,java]
+----
+FlowId existing = FlowIdContext.get();       // nullable; never creates
+FlowId required = FlowIdContext.require();  // fails if absent or removed
+FlowId initial = FlowIdContext.getOrCreate(); // explicit initialization
+
+FlowIdContext.put(replacement);
+FlowId previous = FlowIdContext.remove();
+----
+
+`getOrCreate()` retains an existing instance or atomically constructs and stores an initial value. The built-in FlowId factory creates a random UUID and a current millisecond timestamp. An SPI factory can override it; `getOrCreate(() -> suppliedValue)` explicitly bypasses SPI/default resolution. Failed or null construction leaves no newly stored value. An explicit removal is not absence: creation refuses to revive its marker, and only an intentional `put` reintroduces the item. No read, transport import, reply handler, or codec automatically invokes a factory. Applications choose initialization and required-item validation at their flow boundaries.
+
+`FlowIdContext.slot()` exposes its immutable typed declaration for provider/configuration authors. The handle contains no captured context or stored value and is safe to share; each operation resolves the active Vert.x context. Reads of empty storage do not allocate a map. Calls outside an active context fail explicitly. The old string-keyed `Storage` facade is now package-private implementation support, not a public API.
+
+External modules can declare their own items without changing a central library registry:
+
+[source,java]
+----
+public final class TenantContext {
+    public record Tenant(String id) implements ContextChainDataItem {}
+
+    public static final ContextSlot<Tenant> VALUE =
+        ContextSlots.define("tenant", Tenant.class);
+}
+
+TenantContext.VALUE.put(new TenantContext.Tenant("tenant-a"));
+TenantContext.Tenant tenant = TenantContext.VALUE.require();
+----
+
+Declare the key and type once. Typed operations validate values against that type; replacement also checks the existing value atomically, rejecting incompatible data without overwriting it. The item's codec implements `ContextChainDataService` and returns `TenantContext.VALUE.key()` from `key()`; its encoder can validate/cast with `TenantContext.VALUE.type().cast(item)`. Slot declaration does not register a codec or enable propagation. A third argument to `ContextSlots.define` supplies an optional default factory; types requiring application input can omit it. Factories construct values, while aggregate constructors enforce required fields. A concurrent map does not make mutable item internals or read/modify/write sequences atomic.
+
+=== Ownership and Atomic Replacement
+
+For standard collections, see link:context-maps.adoc[typed context maps], link:context-sets.adoc[typed context sets], and link:context-lists.adoc[typed context lists]. They build on the same slot and whole-item transport contracts.
+
+Storage retains exact object references without copying. Prefer immutable items; independently thread-safe mutable items remain the application's responsibility, including consistent encoding by codecs. A slot resolves the current execution context, not a thread-owned value. Neither storage nor transport provides locks around mutable fields.
+
+Use `update` to transform one existing immutable item atomically instead of a separate read/modify/write sequence:
+
+[source,java]
+----
+TenantContext.Tenant replacement = TenantContext.VALUE.update(current ->
+    new TenantContext.Tenant(current.id() + "-verified"));
+
+FlowIdContext.put(FlowId.builder().withId("replacement-flow").build());
+----
+
+The updater runs once for an existing correctly typed value and returns the exact stored replacement; returning the original instance is allowed. It must be short, synchronous, and must not modify context storage or initialize other slots. An absent or removed item fails without invoking the updater or a factory. A null result is invalid: use `remove()` for explicit deletion, and `put()` for intentional reintroduction.
+
+`FlowId` is final and immutable. `FlowIdContext.put(...)` replaces the entire instance, not individual fields. Omitted fields remain absent in the replacement; storage does not merge them from the old value. Use `FlowId.builderFrom(current)` when constructing a replacement that intentionally retains existing fields. The FlowId facade has no dedicated `update` method; callers that need atomic derivation can explicitly use the generic `FlowIdContext.slot().update(...)` operation, which also replaces the complete value.
+
+An exception or invalid result retains the previous reference, but cannot undo in-place mutations performed by application code. Construct a replacement rather than modifying the input. Atomicity covers one slot only; combine values into one immutable item if they must change together. There are no cross-slot or distributed transactions.
+
+Updates affect subsequent outgoing calls and replies, not already-sent messages or remote instances. Inbound values and removals still follow the codec's replacement policy; an atomic local update does not change FlowId's caller-preservation policy. Initial creation remains explicit through `getOrCreate()`.
+
+=== Factory Providers
+
+For an environment-specific FlowId factory:
+
+[source,java]
+----
+package example;
+
+import java.util.UUID;
+import com.inqwise.context.ContextSlot;
+import com.inqwise.context.FlowIdContext;
+import com.inqwise.context.data.FlowId;
+import com.inqwise.context.spi.ContextItemFactory;
+
+public final class OrderFlowIdFactory implements ContextItemFactory<FlowId> {
+    public ContextSlot<FlowId> slot() {
+        return FlowIdContext.slot();
+    }
+
+    public FlowId create() {
+        return FlowId.builder().withId("order-" + UUID.randomUUID()).build();
+    }
+}
+----
+
+Register `example.OrderFlowIdFactory` in `META-INF/services/com.inqwise.context.spi.ContextItemFactory`. Default factory discovery is lazy, cached, and uses the library's defining classloader, independently of the first caller's thread context classloader. Providers must be visible to that loader, concurrency-safe, and must not capture a flow in their constructor. Duplicate exact keys, invalid providers, or mismatched types fail explicit creation; discovery failures are cached without original messages or cause chains. Existing values, reads, removal markers, and explicit factories bypass discovery. There is no global setter or runtime reload. Keep factories fast; do not modify context storage or initialize other slots inside the atomic construction callback.
+

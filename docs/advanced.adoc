@@ -1,0 +1,192 @@
+= Expert Guide
+:toc:
+:toclevels: 2
+
+link:../README.adoc[Quick start] | link:usage.adoc[Practical guide] | link:index.adoc[All documentation]
+
+Read this when the built-in FlowId or default adapter settings are not enough. The examples extend `TenantContext` from the link:usage.adoc#_your_own_typed_item[practical guide].
+
+SPI means _service provider interface_: you implement a Java interface and list the implementation class in a `META-INF/services` file so the library can discover it. Your application or extension JAR owns both files; there is no central library registry to modify.
+
+== Update An Immutable Item Atomically
+
+Use a single replacement when values must change together. Inside an active Vert.x context:
+
+[source,java]
+----
+TenantContext.VALUE.put(new TenantContext.Tenant("tenant-a"));
+TenantContext.Tenant updated = TenantContext.VALUE.update(current ->
+    new TenantContext.Tenant(current.id() + "-verified"));
+----
+
+This example requires the resulting ID to satisfy the tenant schema. The callback runs synchronously for an existing item. It must return a valid, non-null replacement and must not modify storage or perform asynchronous work. Absent or removed items fail without invoking it. Exceptions retain the old reference; they cannot undo in-place mutations, which is why immutable values are preferred.
+
+Atomicity covers one context item, not several slots or several services. For a complex structure with required fields, enforce those requirements in its constructor and store the structure as one immutable item. FlowId itself remains immutable and supports only whole-instance replacement. See link:storage.adoc[storage contracts].
+
+== Write A Codec
+
+Storage and transport are separate. A `ContextChainDataService` tells the library how to encode one declared item, recognize removal, and decide whether incoming data may replace current state.
+
+Put this class in `example/TenantCodec.java`, alongside the `TenantContext` class:
+
+[source,java]
+----
+package example;
+
+import com.inqwise.context.spi.ContextChainDataItem;
+import com.inqwise.context.spi.ContextChainDataService;
+
+public final class TenantCodec implements ContextChainDataService {
+    private static final String VALUE = "tenant:1:value:";
+    private static final String REMOVAL = "tenant:1:remove:";
+
+    @Override
+    public String key() {
+        return TenantContext.VALUE.key();
+    }
+
+    @Override
+    public String marshalToString(ContextChainDataItem item) {
+        return VALUE + TenantContext.VALUE.type().cast(item).id();
+    }
+
+    @Override
+    public ContextChainDataItem unmarshalFormString(String text) {
+        if (!text.startsWith(VALUE)) {
+            throw new IllegalArgumentException("Unsupported tenant format");
+        }
+        return new TenantContext.Tenant(text.substring(VALUE.length()));
+    }
+
+    @Override
+    public String marshalRemovalToString() {
+        return REMOVAL;
+    }
+
+    @Override
+    public boolean isRemoval(String text) {
+        return REMOVAL.equals(text);
+    }
+
+    @Override
+    public boolean replaceExistingOnInbound() {
+        return false;
+    }
+}
+----
+
+The deliberately small wire schema accepts only the tenant ID characters and length enforced by the record. It has a version prefix and a distinct removal token. It does not deserialize class names or guess Java types from input. For richer structures, define and validate your own versioned schema, bounds, and element types.
+
+=== Register The Provider
+
+Create `src/main/resources/META-INF/services/com.inqwise.context.spi.ContextChainDataService` in the application or extension JAR, containing:
+
+[source,text]
+----
+example.TenantCodec
+----
+
+Keep this registration when packaging the application. The library's defining classloader must see both the provider and the registration. Providers are discovered once, shared across contexts, and must support concurrent use. Deploy the same schema-aware codec on both ends.
+
+EventBus discovers the codec automatically. HTTP and Kafka additionally require an adapter configuration that includes the slot, as shown below. No codec or factory is registered merely by declaring a slot.
+
+=== Choose The Return Policy
+
+The example returns `false` from `replaceExistingOnInbound()` to preserve an existing local tenant, including when processing replies. Empty storage can still accept an incoming value or removal.
+
+[cols="1,2",options="header"]
+|===
+|Policy |Effect on an existing caller value or removal marker
+|`false` |Preserve caller state. This is also FlowId's built-in policy.
+|`true` (SPI default) |Accept the complete returned replacement or removal. This is not a field/entry merge.
+|===
+
+Choose explicitly for your schema. A codec that allows returned replacement can overwrite caller edits made while a request was pending. Kafka acknowledgments never import consumer state, regardless of this policy.
+
+== Select Items For HTTP And Kafka
+
+Pass explicit configuration when installing the adapters:
+
+[source,java]
+----
+ContextTransportConfiguration configuration = ContextTransportConfiguration.builder()
+    .include(FlowIdContext.slot())
+    .include(TenantContext.VALUE)
+    .build();
+
+HttpContextTransport.install(client, configuration,
+    URI.create("http://orders.internal:8080"));
+
+var sender = KafkaContextTransport.sender(producer, configuration, "orders");
+----
+
+On an HTTP server, use `HttpContextTransport.handler(configuration, applicationHandler)`. On Kafka consumption, use `KafkaContextTransport.handler(configuration, applicationHandler, "orders")`.
+
+Without explicit configuration, HTTP and Kafka select FlowId only unless a default-configuration provider overrides that selection. EventBus instead uses all discovered codecs; this allowlist does not change it.
+
+=== Supply An Application-Wide Default
+
+Put this in `example/ApplicationTransportConfiguration.java`:
+
+[source,java]
+----
+package example;
+
+import com.inqwise.context.ContextTransportConfiguration;
+import com.inqwise.context.FlowIdContext;
+import com.inqwise.context.spi.ContextTransportConfigurationProvider;
+
+public final class ApplicationTransportConfiguration
+        implements ContextTransportConfigurationProvider {
+    @Override
+    public ContextTransportConfiguration configuration() {
+        return ContextTransportConfiguration.builder()
+            .include(FlowIdContext.slot())
+            .include(TenantContext.VALUE)
+            .build();
+    }
+}
+----
+
+Register `example.ApplicationTransportConfiguration` in `META-INF/services/com.inqwise.context.spi.ContextTransportConfigurationProvider`. Install adapters as usual; selecting defaults alone does not install them.
+
+Resolution order is explicit configuration, then one SPI provider, then the built-in FlowId-only configuration. The default is cached per library classloader; it is not a mutable global setter. Use explicit configuration when different clients need different selections. See link:transport-configuration.adoc[configuration and custom carriers].
+
+== Customize Initial Creation
+
+For one operation, supply an explicit factory:
+
+[source,java]
+----
+FlowId flow = FlowIdContext.getOrCreate(() ->
+    FlowId.builder().withId("order-42").build());
+----
+
+An existing value wins; the factory is not invoked on reads, imports, or replies. An explicit removal still cannot be revived through `getOrCreate()`.
+
+For an environment-wide factory, implement `ContextItemFactory<T>` and register it through `META-INF/services/com.inqwise.context.spi.ContextItemFactory`. The link:storage.adoc#_factory_providers[complete factory example] shows that provider and its lifecycle constraints.
+
+== Choose A FlowId Wire Format
+
+The default writer uses the legacy format. For readable metadata in an internal debug environment, set the property before creating Vert.x:
+
+[source,shell]
+----
+java -Dinqwise.context.flow-id.codec=json ...
+----
+
+The other writer options are `legacy` and `gzip`. New readers accept all three formats; old readers may require the legacy writer, and wire removal requires updated readers. Compression is optional and may make small values larger. This setting affects FlowId only, not custom codecs. See link:eventbus.adoc[wire formats and compatibility].
+
+== Handle Missing Or Invalid Metadata
+
+The application decides whether metadata is required. For an EventBus handler, fail explicitly when needed:
+
+[source,java]
+----
+if (FlowIdContext.get() == null) {
+    message.fail(422, "Required FlowId is missing");
+    return;
+}
+----
+
+Recoverable codec failures are reported as sanitized `ContextPropagationException` instances through the context/Vert.x exception handler without stopping ordinary payload delivery. Application exceptions retain native behavior; this is not application recovery. Correct deployment and an active context are still required. See link:eventbus.adoc[discovery and error contracts], link:http.adoc[HTTP restrictions], and link:kafka.adoc[Kafka lifecycle boundaries].

@@ -1,0 +1,51 @@
+= Development And Release
+:toc:
+:toclevels: 2
+
+link:../README.adoc[Quick start] | link:usage.adoc[Practical guide] | link:advanced.adoc[Expert guide] | link:index.adoc[All documentation]
+
+For contributors and release maintainers. None of the release or scanner setup below is needed to use the library.
+
+== Build And Test
+
+Build and test with JDK 21 through 27 and Maven 3.6.3 or newer.
+The library is compiled for Java 21; the development JDK range reflects verified coverage-tool compatibility and does not limit the runtime of consuming applications.
+CI tests JDK 21, 22, 25, and 27. Newer build JDKs are rejected by Maven Enforcer until coverage support has been verified.
+
+Run `mvn test` for tests and coverage, or `mvn verify` to also check packaging and Javadocs.
+JaCoCo generates HTML and XML reports under `target/site/jacoco`.
+
+== Release Checks And Workflow
+
+Run `bash .github/scripts/test-release-version.sh` for offline release-input regression checks; this does not create tags, push commits, or publish artifacts. Manual releases accept a non-snapshot version without a `v` prefix, while published-release events preserve their exact prefixed or unprefixed tag. Release preparation, its forked Maven execution, and deployment use https://maven.apache.org/maven-release/maven-release-plugin/usage/non-interactive-release.html[Maven batch mode] with validated version inputs rather than interactive prompts.
+
+Run `bash .github/scripts/test-release-credentials.sh` for offline credential-preflight checks using synthetic secrets only. Releases reject missing or blank Maven credentials and signing keys before key import or manual release preparation can push commits and tags. This checks configuration presence, not credential authentication or key validity, and does not require a passphrase for an unprotected signing key. Credential contents are never printed by the preflight.
+
+Run `bash .github/scripts/test-release-signing.sh` for protected and unprotected key checks in disposable GnuPG keyrings, without using personal keys. After key import, the release workflow signs and verifies a temporary probe before Git preparation; probe files are removed on success or failure, and passphrases are passed through standard input without logging their values. This checks current GnuPG signing availability, not Sonatype authentication or every aspect of Maven signing configuration.
+
+Run `bash .github/scripts/test-release-assets.sh` to check release-asset collection with the JDK's `jar` tool and GnuPG. It creates and removes an isolated temporary test keyring, without accessing your signing keys or publishing artifacts. Release uploads require the three expected JARs and their verified detached signatures from the fresh build, not Maven's cache.
+
+Run `bash .github/scripts/test-release-source.sh` for offline tagged-source regression checks in temporary Git repositories with a controlled Maven command. `RUN_REAL_MAVEN=1` additionally evaluates a fixture's effective coordinates using the locally cached Maven Help plugin, still offline. Releases build and test a fresh detached tagged worktree and recheck its pinned commit, clean state, and Maven coordinates before deployment; the workflow source checkout is left intact.
+
+Manual release preparation creates the release tag and next development version using `release:prepare`; it does not run `release:perform` or receive Maven publishing credentials. The later deployment stage is the workflow's only deployment invocation and runs after tagged-source validation and tests. This avoids a separate pre-validation checkout and deployment lifecycle.
+
+Published-release runs additionally require the tag to match the triggering event's commit (`github.sha`), as defined by the https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#release[GitHub release event]. A moved tag cannot silently select different source while the run waits in the release queue. Manual releases instead pin the new tag created during release preparation, not the dispatch branch's earlier commit.
+
+Run `ruby .github/scripts/test-release-workflow.rb` to validate release step ordering, tagged-source checks, commit bindings, and exact upload paths. This offline check uses Ruby's standard library, rejects deliberately broken workflow variants, and never executes workflow commands.
+
+== Security Workflow Checks
+
+Running the pinned Dependency-Check 13.0.0 Maven plugin requires Maven 3.8.1 or newer. This scanner requirement is separate from the library's build baseline.
+
+Run `ruby .github/scripts/test-security-workflow.rb` to check both NVD-key paths, explicit dependency scopes, the CVSS threshold, scanner failure propagation, and separate report retention using a synthetic Maven executable. Runtime and provided dependency findings block CI; the all-scope scan includes test dependencies as a nonblocking report with warnings on failure. This checks CI wiring, not vulnerabilities; it never runs a real scanner or reads an API key.
+
+Run `ruby .github/scripts/test-dependency-check-suppressions.rb` to check the exact, expiring product-identity corrections. Run `bash .github/scripts/test-dependency-check-engine.sh` for the real rule engine; CI also requires this check. It resolves an isolated scanner SDK, not an NVD database; `DEPENDENCY_CHECK_ENGINE_OFFLINE=1` requires cached Maven artifacts. The link:security-scans.adoc[scan triage] distinguishes client/server misidentifications from the unresolved bundled Jackson findings, which remain visible in the nonblocking test-dependency report.
+
+== Release Queue And Permissions
+
+Manual and published-release runs share one non-cancelling release concurrency group, so tagging and publishing cannot overlap within this workflow. The https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency[GitHub Actions release queue] allows up to 100 pending runs instead of replacing an earlier pending release. This does not deduplicate repeated release requests or make failed publications safe to retry automatically.
+
+The release workflow denies token permissions by default and grants only `contents: write` to its repository-restricted release job for tag pushes and GitHub release uploads. Other workflows are unchanged. Repository rules and organization policies can still restrict those operations; declaring token permissions does not bypass them.
+
+The optional Snyk workflow explicitly skips scans when the repository's `SNYK_TOKEN` secret is absent; a skipped scan is not a clean security result. When configured, the CLI runs on the runner's configured JDK rather than inside a Maven action container, and vulnerability findings or scan errors fail the scan step. The separate Snyk GitHub-app status is independent of this workflow.
+

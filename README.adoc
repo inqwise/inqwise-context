@@ -1,37 +1,26 @@
 = Inqwise Context
-:toc: macro
-:toclevels: 2
 
 image::docs/images/inqwise-context-header.png[Inqwise Context - Context propagation for Vert.x,width=1200]
 
 image:https://github.com/inqwise/inqwise-context/actions/workflows/ci.yml/badge.svg[CI, link=https://github.com/inqwise/inqwise-context/actions/workflows/ci.yml]
-image:https://github.com/inqwise/inqwise-context/actions/workflows/release.yml/badge.svg[Release, link=https://github.com/inqwise/inqwise-context/actions/workflows/release.yml]
-image:https://github.com/inqwise/inqwise-context/actions/workflows/codeql.yml/badge.svg[CodeQL, link=https://github.com/inqwise/inqwise-context/actions/workflows/codeql.yml]
-image:https://codecov.io/gh/inqwise/inqwise-context/branch/master/graph/badge.svg[Codecov, link=https://codecov.io/gh/inqwise/inqwise-context]
-image:https://snyk.io/test/github/inqwise/inqwise-context/badge.svg[Snyk Security, link=https://snyk.io/test/github/inqwise/inqwise-context]
-image:https://img.shields.io/maven-central/v/com.inqwise/inqwise-context.svg?label=Maven%20Central[Maven Central, link=https://search.maven.org/search?q=g:%22com.inqwise%22%20AND%20a:%22inqwise-context%22]
-image:https://img.shields.io/badge/License-MIT-yellow.svg[License: MIT, link=https://opensource.org/licenses/MIT]
-image:https://img.shields.io/badge/Java-21%2B-blue.svg[Java Version, link=https://openjdk.java.net/projects/jdk/21/]
+image:https://img.shields.io/maven-central/v/com.inqwise/inqwise-context.svg?label=Maven%20Central[Maven Central, link=https://central.sonatype.com/artifact/com.inqwise/inqwise-context]
+image:https://img.shields.io/badge/Java-21%2B-blue.svg[Java 21+, link=https://openjdk.org/projects/jdk/21/]
 
-Typed metadata for Vert.x execution flows: keep a flow identifier or application-owned item available through asynchronous work, and propagate it across supported service boundaries without adding it to every method signature.
+*Keep flow metadata available across asynchronous Vert.x calls, without passing it through every method.*
 
-toc::[]
+Set a `FlowId` when work begins. Read it in the receiving service and again when the reply arrives. EventBus integration is automatic, including calls made through ServiceProxy.
 
-== Main Idea
+[source,text]
+----
+Sender                    Receiver                 Sender's reply callback
+create FlowId     ->      read the same ID    ->    read the original FlowId
+----
 
-Store metadata once at a flow boundary and access it through a typed context facade wherever that flow continues.
-The library separates two concerns:
-
-* *Context continuity:* keep the exact stored object available in the same execution context, including supported asynchronous callbacks.
-* *Wire propagation:* encode metadata on an outgoing call or record and reconstruct it in the receiving context. Remote instances have matching values, not shared Java identity.
-
-`FlowId` is the built-in final, immutable item. Your application can define its own typed items, factories, and codecs through public APIs and SPI providers.
+Use it for correlation IDs, tenant metadata, or small application-owned context objects. Within a context, storage keeps the object reference; across a wire, the receiver gets a decoded value, not the same Java object.
 
 == Quick Start
 
-=== Add the Library
-
-Set `latest.version` to the library release you want to use.
+You need Java 21+ and a Vert.x 5 application. Add the library, setting `latest.version` to the release you use:
 
 [source,xml]
 ----
@@ -42,20 +31,15 @@ Set `latest.version` to the library release you want to use.
 </dependency>
 ----
 
-Provide Vert.x Core and Guava in the consuming application's runtime; they are provided-scope dependencies of the library.
-Supply Log4j Core or keep your existing compatible logging provider.
+Your application supplies Vert.x Core and Guava, plus Log4j Core or an existing compatible logging setup. Keep the library's `META-INF/services` registrations when packaging an executable JAR; they enable automatic EventBus integration.
 
-Use Java 21 or newer. Preserve the library's `META-INF/services` registrations when assembling an executable or shaded JAR.
-Vert.x discovers the EventBus integration automatically; there is no manual interceptor initialization in application code.
+=== Try A Request And Reply
 
-=== Send and Receive a FlowId
-
-This complete example deploys the receiver before the sender, initializes an identity explicitly, and reads it on both sides of an EventBus request.
+This complete example deploys two verticles and sends one request. No manual interceptor setup or `runOnContext` wrapper is needed.
 
 [source,java]
 ----
 import com.inqwise.context.FlowIdContext;
-import com.inqwise.context.data.FlowId;
 import io.vertx.core.Future;
 import io.vertx.core.VerticleBase;
 import io.vertx.core.Vertx;
@@ -73,8 +57,8 @@ public final class QuickStart {
         @Override
         public Future<?> start() {
             return vertx.eventBus().<String>consumer("orders", message -> {
-                FlowId flow = FlowIdContext.require();
-                message.reply("Processed order with flow " + flow.getId());
+                System.out.println("Receiver: " + FlowIdContext.require().getId());
+                message.reply("done");
             }).completion();
         }
     }
@@ -82,184 +66,50 @@ public final class QuickStart {
     static final class Sender extends VerticleBase {
         @Override
         public Future<?> start() {
-            FlowId flow = FlowIdContext.getOrCreate();
+            System.out.println("Sender: " + FlowIdContext.getOrCreate().getId());
             return vertx.eventBus().<String>request("orders", "order-42")
-                .map(reply -> {
-                    System.out.println(reply.body());
-                    System.out.println("Caller retains flow " + FlowIdContext.require().getId());
-                    return flow;
-                });
+                .onSuccess(reply ->
+                    System.out.println("Reply: " + FlowIdContext.require().getId()));
         }
     }
 }
 ----
 
-Both output lines contain the same generated ID. The receiver reads a decoded instance; the sender retains its original instance after the reply.
-`getOrCreate()` is explicit initialization; `get()` never creates a value, and `require()` fails when it is absent.
+*All three lines print the same ID.* `getOrCreate()` explicitly starts the identity; the receiver and reply callback only read it.
 
-Deployed lifecycle callbacks and message handlers already provide the required Vert.x context. No `runOnContext` wrapper is needed there.
-Calling storage from an ordinary Java thread is an execution error, not an alternative deployment model.
+== The Operations You Need First
 
-== Why Use It?
+Use these inside a deployed verticle callback or handler, where a Vert.x context is active:
 
-* *Less plumbing:* keep correlation metadata out of every method argument, return value, and payload model.
-* *Typed access:* application code uses `FlowIdContext` or a declared `ContextSlot<T>`, not repeated keys and casts.
-* *Predictable return behavior:* downstream FlowId changes do not overwrite an existing caller value or removal marker.
-* *Controlled boundaries:* HTTP origins and Kafka topics are explicitly allowlisted; custom codecs choose their own inbound replacement policy.
-* *Independent application delivery:* recoverable metadata failures are reported without turning them into payload-delivery failures. Application failures retain their native behavior.
-* *Application-owned extension:* add items, codecs, initialization factories, and default transport configuration without a central item registry.
+[source,java]
+----
+FlowIdContext.getOrCreate(); // initialize once, or keep the current identity
+FlowIdContext.get();         // read; null if no identity is stored
+FlowIdContext.require();     // read; fail if an identity is required but missing
+----
 
-== Use Cases
+The library does not create an identity on every read. Your application decides where a flow starts. Do not call storage directly from ordinary Java threads; bind external callbacks from the originating Vert.x context, as shown in the practical guide.
+
+== Go Further
 
 [cols="1,2",options="header"]
 |===
-|Need |Usage
-|Correlate service calls and logs |Initialize a FlowId at ingress and read it from handlers, downstream services, and reply callbacks.
-|Carry tenant or business-operation metadata |Declare an immutable typed item; register a codec only when it must cross a wire boundary. Treat received metadata as untrusted.
-|Call an internal HTTP service |Install the WebClient adapter for allowed origins and wrap the server handler.
-|Forward Kafka processing context |Use the sender and per-record handler adapters for allowed topics; each consumed record receives isolated library storage.
-|Use a foreign-thread async client or periodic timer |Bind results or handlers back to the originating Vert.x context before registering application continuations.
+|What you want to do |Where to start
+|Replace or remove a FlowId; use ServiceProxy |link:docs/usage.adoc#_flowid_in_application_code[Everyday FlowId usage]
+|Carry metadata through internal HTTP or Kafka |link:docs/usage.adoc#_connect_services[Service integration examples]
+|Use timers or a foreign-thread async client |link:docs/usage.adoc#_timers_and_external_callbacks[Callback examples]
+|Add your own item, map, set, or list |link:docs/usage.adoc#_add_application_metadata[Typed application metadata]
+|Write codecs, customize factories, or choose transport defaults |link:docs/advanced.adoc[Expert guide with SPI examples]
 |===
 
-Context metadata is not authenticated identity or authorization. Validate trust and required fields at application boundaries.
+EventBus is automatic. HTTP and Kafka require opt-in adapters and destination allowlists. Redis and Elasticsearch callback binding preserves local context; it does not send metadata through those protocols.
 
-== Choose a Transport
+Keep metadata small and treat received values as untrusted. Context metadata is not authentication or authorization. FlowId replies preserve the caller's existing identity; custom items can choose a different return policy.
 
-[cols="1,2,2",options="header"]
-|===
-|Boundary |Enablement |Return behavior
-|EventBus / ServiceProxy, local or clustered |Automatic EventBus integration for discovered codecs; configure clustering separately. |Replies apply the codec's inbound policy. FlowId preserves existing caller state.
-|WebClient -> HTTP server |Opt-in `HttpContextTransport`; provide the aligned WebClient dependency, allowlist origins, and wrap the server handler. Direct HTTP/1.1, HTTP/2, and HTTP/3 are covered with their documented runtime requirements. |Final-response headers can import metadata under the inbound policy.
-|Kafka producer -> consumer |Opt-in `KafkaContextTransport`; provide the aligned Kafka client dependency and allowlist topics. |Acknowledgments resume on the producer context; consumer changes do not return to the producer.
-|Redis, Elasticsearch, and other async APIs |Supported callbacks retain context or use `ContextPropagation` binding as documented. |Binding preserves local context only; it does not attach metadata to those protocols.
-|===
+== Documentation
 
-HTTP and Kafka propagation are opt-in. Creating a configuration or declaring a slot does not install an adapter or register a codec.
-See the link:docs/reference.adoc#_http_transport[HTTP] and link:docs/reference.adoc#_kafka_transport[Kafka] reference for installation examples, allowlists, encoding limits, proxy restrictions, and lifecycle ownership.
-
-== Everyday Usage
-
-=== Replace or Remove a FlowId
-
-[source,java]
-----
-FlowIdContext.put(FlowId.builder().withId("order-42").build());
-FlowId current = FlowIdContext.require();
-
-FlowId previous = FlowIdContext.remove();
-FlowId absent = FlowIdContext.get(); // null; an explicit removal marker remains
-
-FlowIdContext.put(current); // intentional reintroduction
-----
-
-Replacement is whole-instance: omitted fields are not merged from the previous value.
-Use `FlowId.builderFrom(current)` when constructing a replacement that intentionally retains fields.
-Removal travels like a replacement, subject to the same inbound policy; it does not forcibly erase an upstream caller's existing FlowId.
-
-[source,text]
-----
-A has flow-A -> B replaces with flow-B -> C receives flow-B
-A retains flow-A <- B retains flow-B <- C replies
-----
-
-=== Define Your Own Item
-
-Declare the key and type once in an application-owned facade:
-
-[source,java]
-----
-public final class TenantContext {
-    public record Tenant(String id) implements ContextChainDataItem {}
-
-    public static final ContextSlot<Tenant> VALUE =
-        ContextSlots.define("tenant", Tenant.class);
-}
-----
-
-Inside an active context:
-
-[source,java]
-----
-TenantContext.VALUE.put(new TenantContext.Tenant("tenant-a"));
-TenantContext.Tenant current = TenantContext.VALUE.require();
-TenantContext.Tenant replacement = TenantContext.VALUE.update(previous ->
-    new TenantContext.Tenant(previous.id() + "-verified"));
-----
-
-`update` atomically replaces one existing item; it neither creates missing values nor revives removals.
-Prefer immutable items: storage does not synchronize mutable fields or provide cross-slot or distributed transactions.
-Register a `ContextChainDataService` for wire propagation; factory SPI providers are optional and only participate in explicit creation.
-See link:docs/reference.adoc#_typed_context_items[typed items, ownership, and factories].
-For standard collections, use link:docs/context-maps.adoc[typed context maps] for key/value metadata, link:docs/context-sets.adoc[typed context sets] for unique membership, or link:docs/context-lists.adoc[typed context lists] for ordered values with duplicates. All provide immutable snapshots and atomic operations.
-
-=== Bind External Callbacks
-
-Bind from the originating Vert.x context, before attaching application callbacks:
-
-[source,java]
-----
-ContextPropagation.bind(elasticsearch.ping())
-    .onSuccess(response -> use(FlowIdContext.get()));
-
-vertx.setPeriodic(1000, ContextPropagation.bindHandler(timerId ->
-    use(FlowIdContext.get())));
-----
-
-Binding restores execution on the captured context; it does not make arbitrary client threads context-aware or add wire transport.
-See link:docs/reference.adoc#_client_context_compatibility[client and timer compatibility] for supported scenarios and limitations.
-
-== Reference
-
-* link:docs/context-maps.adoc[Typed maps, atomic entry operations, lifecycle, and SPI integration]
-* link:docs/context-sets.adoc[Typed sets, unique membership, atomic batches, and SPI integration]
-* link:docs/context-lists.adoc[Typed lists, ordered duplicates, atomic indexed operations, and SPI integration]
-* link:docs/reference.adoc#_typed_context_items[Typed items, ownership, atomic replacement, and factory SPI]
-* link:docs/reference.adoc#_transport_configuration[Transport configuration and custom carriers]
-* link:docs/reference.adoc#_http_transport[HTTP installation, HTTP/3, routing policies, and failure behavior]
-* link:docs/reference.adoc#_kafka_transport[Kafka installation, per-record isolation, and advisory assessment]
-* link:docs/reference.adoc#_flowid_wire_transport[FlowId codecs, removal semantics, ServiceProxy, clustering, and failure reporting]
-* link:docs/reference.adoc#_client_context_compatibility[Client compatibility and test boundaries]
-* link:SECURITY.md[Security reporting policy]
-
-== Development
-
-Build and test with JDK 21 through 27 and Maven 3.6.3 or newer.
-The library is compiled for Java 21; the development JDK range reflects verified coverage-tool compatibility and does not limit the runtime of consuming applications.
-CI tests JDK 21, 22, 25, and 27. Newer build JDKs are rejected by Maven Enforcer until coverage support has been verified.
-
-Run `mvn test` for tests and coverage, or `mvn verify` to also check packaging and Javadocs.
-JaCoCo generates HTML and XML reports under `target/site/jacoco`.
-
-Run `bash .github/scripts/test-release-version.sh` for offline release-input regression checks; this does not create tags, push commits, or publish artifacts. Manual releases accept a non-snapshot version without a `v` prefix, while published-release events preserve their exact prefixed or unprefixed tag. Release preparation, its forked Maven execution, and deployment use https://maven.apache.org/maven-release/maven-release-plugin/usage/non-interactive-release.html[Maven batch mode] with validated version inputs rather than interactive prompts.
-
-Run `bash .github/scripts/test-release-credentials.sh` for offline credential-preflight checks using synthetic secrets only. Releases reject missing or blank Maven credentials and signing keys before key import or manual release preparation can push commits and tags. This checks configuration presence, not credential authentication or key validity, and does not require a passphrase for an unprotected signing key. Credential contents are never printed by the preflight.
-
-Run `bash .github/scripts/test-release-signing.sh` for protected and unprotected key checks in disposable GnuPG keyrings, without using personal keys. After key import, the release workflow signs and verifies a temporary probe before Git preparation; probe files are removed on success or failure, and passphrases are passed through standard input without logging their values. This checks current GnuPG signing availability, not Sonatype authentication or every aspect of Maven signing configuration.
-
-Run `bash .github/scripts/test-release-assets.sh` to check release-asset collection with the JDK's `jar` tool and GnuPG. It creates and removes an isolated temporary test keyring, without accessing your signing keys or publishing artifacts. Release uploads require the three expected JARs and their verified detached signatures from the fresh build, not Maven's cache.
-
-Run `bash .github/scripts/test-release-source.sh` for offline tagged-source regression checks in temporary Git repositories with a controlled Maven command. `RUN_REAL_MAVEN=1` additionally evaluates a fixture's effective coordinates using the locally cached Maven Help plugin, still offline. Releases build and test a fresh detached tagged worktree and recheck its pinned commit, clean state, and Maven coordinates before deployment; the workflow source checkout is left intact.
-
-Manual release preparation creates the release tag and next development version using `release:prepare`; it does not run `release:perform` or receive Maven publishing credentials. The later deployment stage is the workflow's only deployment invocation and runs after tagged-source validation and tests. This avoids a separate pre-validation checkout and deployment lifecycle.
-
-Published-release runs additionally require the tag to match the triggering event's commit (`github.sha`), as defined by the https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#release[GitHub release event]. A moved tag cannot silently select different source while the run waits in the release queue. Manual releases instead pin the new tag created during release preparation, not the dispatch branch's earlier commit.
-
-Run `ruby .github/scripts/test-release-workflow.rb` to validate release step ordering, tagged-source checks, commit bindings, and exact upload paths. This offline check uses Ruby's standard library, rejects deliberately broken workflow variants, and never executes workflow commands.
-
-Run `ruby .github/scripts/test-security-workflow.rb` to check both NVD-key paths, explicit dependency scopes, the CVSS threshold, scanner failure propagation, and separate report retention using a synthetic Maven executable. Runtime and provided dependency findings block CI; the all-scope scan includes test dependencies as a nonblocking report with warnings on failure. This checks CI wiring, not vulnerabilities; it never runs a real scanner or reads an API key.
-
-Run `ruby .github/scripts/test-dependency-check-suppressions.rb` to check the exact, expiring product-identity corrections. Run `bash .github/scripts/test-dependency-check-engine.sh` for the real rule engine; CI also requires this check. It resolves an isolated scanner SDK, not an NVD database; `DEPENDENCY_CHECK_ENGINE_OFFLINE=1` requires cached Maven artifacts. The link:docs/security-scans.adoc[scan triage] distinguishes client/server misidentifications from the unresolved bundled Jackson findings, which remain visible in the nonblocking test-dependency report.
-
-Manual and published-release runs share one non-cancelling release concurrency group, so tagging and publishing cannot overlap within this workflow. The https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency[GitHub Actions release queue] allows up to 100 pending runs instead of replacing an earlier pending release. This does not deduplicate repeated release requests or make failed publications safe to retry automatically.
-
-The release workflow denies token permissions by default and grants only `contents: write` to its repository-restricted release job for tag pushes and GitHub release uploads. Other workflows are unchanged. Repository rules and organization policies can still restrict those operations; declaring token permissions does not bypass them.
-
-The optional Snyk workflow explicitly skips scans when the repository's `SNYK_TOKEN` secret is absent; a skipped scan is not a clean security result. When configured, the CLI runs on the runner's configured JDK rather than inside a Maven action container, and vulnerability findings or scan errors fail the scan step. The separate Snyk GitHub-app status is independent of this workflow.
-
-== Acknowledgments
-
-Inspired by https://github.com/reactiverse/reactiverse-contextual-logging[reactiverse-contextual-logging].
+Follow link:docs/index.adoc[the documentation guide] for the full reading path. Detailed contracts, protocol limits, test coverage, security, and contributor/release instructions live there, away from the quick start.
 
 == License
 
-This project is licensed under the link:LICENSE[MIT License].
+link:LICENSE[MIT License]. Inspired by https://github.com/reactiverse/reactiverse-contextual-logging[reactiverse-contextual-logging].
